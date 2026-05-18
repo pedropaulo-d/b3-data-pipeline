@@ -84,18 +84,27 @@ A intenção não é provar que cada escolha é a "melhor possível" — é deix
 
 ---
 
-## 2026-05-18 — Etapa 1 — Idempotência por sobrescrita do arquivo de data
+## 2026-05-18 — Etapa 1 — Idempotência semântica por sobrescrita
 
-**Contexto.** Como tratar reexecução do pipeline para um período já ingerido? As opções típicas são: (a) sobrescrever a partição inteira; (b) versionar por timestamp/ingestion-id (`cotacoes_20260518T031530.parquet`); (c) detectar e pular se o arquivo já existe.
+**Contexto.** Ao reexecutar a ingestão para uma data já baixada, qual deve ser o comportamento: sobrescrever, pular, ou versionar?
 
-**Decisão.** **Sobrescrever** o arquivo da data. Reexecução produz o mesmo conjunto de arquivos com o mesmo conteúdo (assumindo que a fonte não mudou).
+**Decisão.** Sobrescrever o arquivo Parquet da data. A idempotência garantida é **semântica**, não byte-a-byte.
+
+**Definição da garantia.** Para qualquer data D, reexecutar a ingestão para D produz um arquivo Parquet cujo *conteúdo lógico* (linhas, colunas, valores) é idêntico ao da execução anterior. Os bytes do arquivo no disco podem variar entre execuções por razões legítimas do formato Parquet:
+- Metadata embutida pelo PyArrow com timestamp de escrita
+- Ordem das linhas (o yfinance pode retornar tickers em ordem variável)
+- Estatísticas de row group (min/max por coluna)
+
+Nenhuma dessas variações afeta camadas downstream (DuckDB, dbt, dashboard), porque todas elas consomem o *conteúdo* do Parquet, não os bytes.
+
+**Validação empírica realizada em 2026-05-18.** Executado `--modo range --inicio 2026-05-15 --fim 2026-05-15` duas vezes seguidas. Comparado o DataFrame resultante em ambas as execuções (ordenado por ticker): linhas, colunas, tipos e valores idênticos. Hash MD5 do arquivo .parquet variou — esperado e aceitável.
 
 **Racional.**
-- **Idempotência declarativa.** O resultado final depende só do intervalo solicitado, não do histórico de execuções. Essa propriedade é central para orquestração (Etapa 5) — Airflow pode re-disparar uma task sem preocupação.
-- **Simplicidade.** Sem necessidade de tabela de controle, sem lógica de "qual versão é a oficial". A pasta `data/raw/cotacoes/` é a verdade.
-- **Correção de fonte.** Se o yfinance corrigir um valor histórico (acontece, especialmente em ajustes retroativos por proventos), uma reexecução do range incorpora a correção naturalmente.
+- **Padrão da indústria.** Airflow, dbt, Spark e Kafka definem idempotência em termos semânticos. Garantir byte-a-byte exigiria ordenar o DataFrame antes de salvar, desabilitar estatísticas e fixar metadata — custo desproporcional ao benefício.
+- **Auditoria semântica é o que importa.** Para reconstruir o estado do warehouse a partir do raw layer, basta que o conteúdo seja reproduzível. A camada downstream (dbt) é determinística em cima de dado lógico.
+- **Sobrescrita simplifica retroatividade.** Se a fonte (yfinance) corrigir um valor histórico, basta reexecutar a data; a versão nova vence. Sem necessidade de migração ou limpeza.
 
-**Trade-off aceito.** **Perde-se o histórico de versões do raw** — não é possível saber, depois, qual era o `Adj Close` que o yfinance servia em uma data anterior. Em ambiente real, isso seria coberto por snapshot em object storage versionado (S3 versioning). Aqui, fica como nota: o raw é "verdade atual segundo a fonte", não "verdade histórica do que vimos".
+**Trade-off aceito.** Não há rastreabilidade de quando uma data foi re-baixada. Mitigação: se isso virar requisito, futuramente migrar para dbt snapshots no warehouse (Etapa 4+), que dão SCD tipo 2 sem custo no raw layer.
 
 ---
 
