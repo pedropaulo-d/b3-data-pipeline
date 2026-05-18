@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> Este arquivo **não é instrução para o usuário** — é contexto persistente carregado em toda sessão do Claude Code neste repositório. Trate-o como diretriz operacional.
+> Este arquivo **não é instrução para o usuário** — é contexto persistente carregado em toda sessão do Claude Code neste repositório. Trate-o como diretriz operacional. Este arqyuivo não pode passar de 200 linhas.
 
 ---
 
@@ -26,30 +26,69 @@ Se algo cai no lado "aprendizado", **pare e devolva ao usuário** — mesmo que 
 
 ## Regras de delegação por tipo de tarefa
 
-### ✅ Pode fazer integralmente
+O usuário atua como **tech lead / arquiteto de dados** deste projeto. Sua função
+é executar a implementação dentro das decisões que ele toma. Ele revisa o
+código gerado — não o escreve linha a linha.
 
-- Criar estrutura de pastas e arquivos vazios
-- Boilerplate de scripts Python (imports, parsing de argumentos, logging)
-- `docker-compose.yml` e `Dockerfile` a partir de requisitos descritos
-- Modelos dbt em SQL/Jinja **a partir de uma modelagem já desenhada pelo usuário**
-- DAGs do Airflow **a partir de um fluxo de tarefas já definido pelo usuário**
-- Testes unitários e de integração
-- READMEs, docstrings, comentários explicativos
-- Debug de erros de sintaxe, dependência, configuração
+### ✅ Pode (e deve) fazer integralmente
 
-### ⚠️ Pode ajudar, mas o usuário decide
+- Estrutura de pastas e arquivos
+- Scripts Python completos (ingestão, transformação, utilidades)
+- `docker-compose.yml`, `Dockerfile`, configuração de serviços
+- Modelos dbt em SQL/Jinja a partir da modelagem que o usuário desenhou
+- DAGs do Airflow a partir do fluxo que o usuário definiu
+- Testes (pytest, dbt tests)
+- READMEs, docstrings, comentários, diagramas Mermaid
+- Debug de erros, refactor, otimização
 
-- **Modelagem dimensional** (granularidade, chaves, SCDs) — explique trade-offs, deixe escolher
-- **Decisões de arquitetura** (separação de camadas, particionamento, formato de storage) — apresente opções
-- **Lógica financeira** (definição de retorno, ajuste por proventos, janelas móveis) — confirme antes de codar
+Entregue código completo e funcional. Não deixe TODOs nem stubs esperando o
+usuário preencher, exceto quando explicitamente pedido.
 
-### ❌ Não faça sem o usuário tentar primeiro
+### ⚠️ NÃO faça sem decisão explícita do usuário
 
-- **Script de ingestão da Etapa 1** — é o primeiro contato dele com yfinance + Parquet
-- **SQL exploratório da Etapa 3** — é onde ele aprende a "conversar" com o DuckDB
-- **Definição de indicadores da Etapa 6** — é o coração do storytelling em entrevista
+Estas são as áreas que o usuário se reserva. Em todas elas, **pergunte antes
+de assumir**, apresente alternativas com trade-offs claros, e só implemente
+depois da decisão dele:
 
-Nesses casos, ofereça pistas, revise código que ele escreveu, sugira melhorias — mas **não entregue a primeira versão pronta**.
+- **Modelagem dimensional**
+  - Granularidade da fato ("1 linha = o quê?")
+  - Quais dimensões existem e por quê
+  - Surrogate key vs natural key
+  - SCD tipo 1, 2 ou 3 em cada dimensão
+  - Esquema estrela vs floco
+
+- **Decisões de arquitetura**
+  - Separação de camadas (raw/staging/intermediate/marts)
+  - Estratégia de particionamento (por dia, mês, ticker)
+  - Formato de storage e compressão
+  - Materialização dbt (view, table, incremental, ephemeral)
+  - Estratégia de orquestração (uma DAG monolítica vs múltiplas)
+
+- **Regras de negócio e lógica financeira**
+  - Definição de retorno (simples, log, ajustado por proventos)
+  - Tratamento de dividendos e splits
+  - Janelas móveis (qual período, com ou sem preenchimento)
+  - Fórmulas de indicadores (P/L, dividend yield, payout, etc.)
+  - Como tratar feriados, pregões parciais, NaN
+
+Comportamento esperado nestas áreas: liste as opções viáveis, explique o
+trade-off de cada uma, recomende uma se tiver convicção técnica, **e espere
+a escolha do usuário antes de codar**.
+
+### Comportamento esperado em sessões
+
+1. **Em decisões de modelagem/arquitetura/negócio:** pergunte primeiro,
+   implemente depois. Mesmo que pareça óbvio.
+2. **Em implementação:** entregue código completo, idiomático, com docstrings
+   e logging adequado. Não peça ao usuário para "preencher os detalhes".
+3. **Ao escrever código novo que envolve um conceito não trivial** (window
+   function complexa, macro Jinja, retry com backoff), **explique brevemente
+   a escolha no commit message ou em comentário** — para o usuário revisar
+   conscientemente, não apenas aceitar.
+4. **Se o usuário pedir algo que conflita com decisões anteriores** registradas
+   em `docs/decisoes.md`, aponte o conflito antes de executar.
+5. **Não pule etapas do plano do projeto.** A sequência é pedagógica para o
+   usuário; antecipar Airflow antes da Etapa 5 não ajuda.
 
 ---
 

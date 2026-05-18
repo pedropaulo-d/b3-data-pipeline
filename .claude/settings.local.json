@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m py_compile ingestion/__init__.py ingestion/config.py ingestion/download.py ingestion/storage.py ingestion/main.py; if \\($?\\) { \"OK: todos os módulos compilam.\" } else { \"FALHA na compilação.\" })",
+      "PowerShell(python -m py_compile ingestion/download.py; if \\($?\\) { \"OK: download.py compila.\" } else { \"FALHA.\" })"
+    ]
+  }
+}
