@@ -16,13 +16,21 @@ O objetivo é ter material concreto para revisar antes de entrevista — não me
 **Fim:** —
 
 ### Conceitos
-- (preencher conforme surgirem)
+
+- **Projeto de portfólio vs ferramenta funcional.** O objetivo deste projeto é demonstrar competências para vaga de engenharia de dados, não substituir Status Invest ou TradingView. Cada peça da stack (Airflow, S3, dbt, DuckDB) existe para aparecer no currículo, não porque o problema exige. Isso muda o critério de decisão em cada etapa: "qual escolha é mais defensável em entrevista" em vez de "qual é a mais eficiente".
+- **MinIO vs S3 real.** MinIO implementa a API S3 por construção. Código que escreve em MinIO escreve em S3 trocando apenas o endpoint. Para projeto pessoal, MinIO local é zero custo e velocidade de iteração; o aprendizado conceitual é idêntico. A única coisa que se perde é exercitar IAM da AWS — mitigado por documentar a portabilidade no README.
+- **Idempotência como princípio fundamental.** Antes mesmo de escrever a primeira linha, decidi que toda etapa precisaria respeitar idempotência. Isso travou decisões posteriores (sobrescrever vs versionar, como testar reexecução, como o Airflow vai disparar backfill na Etapa 5).
+- **Arquitetura medalhão.** Camadas raw → staging → marts. O raw é imutável e fiel à fonte. Staging limpa tipos e nomes (1:1 com raw). Marts são modelos analíticos finais (Kimball: fato + dimensões). Cada camada tem responsabilidade clara, o que evita o anti-padrão "SQL gigante que faz tudo de uma vez".
 
 ### Dúvidas
-- (preencher conforme surgirem)
+
+- Em projeto de tamanho médio (não pequeno, não FAANG), onde mora o limite entre "abstrair backend" e "trocar direto"? No meu caso decidi trocar direto na Etapa 2, mas a resposta certa parece variar com o contexto. Vale revisitar quando estudar projetos open-source de engenharia de dados.
+- Quando uma empresa adota dbt, ela ainda usa stored procedures para alguma coisa? Ou dbt absorve tudo que era SQL transformacional? (Resposta provável: convive, mas dbt vira o "padrão novo" — confirmar lendo postmortem de empresas que migraram.)
 
 ### Descobertas
-- (preencher conforme surgirem)
+
+- **Tabela de "competências por peça" do README virou âncora mental.** Escrever a tabela "qual peça da stack demonstra qual competência" no início do projeto me forçou a justificar cada escolha. Em vaga de engenharia de dados, recrutador olha exatamente isso. Quando bater dúvida "vale a pena adicionar X?", a pergunta certa é: "isso adiciona uma linha nova à tabela, ou é redundante?"
+- **CLAUDE.md como artefato de governança.** Não é só prompt — é um documento que define divisão de trabalho humano/IA explicitamente. Quando recrutador perguntar "como você usou IA no projeto?", esse arquivo é a resposta concreta.
 
 ---
 
@@ -43,11 +51,15 @@ O objetivo é ter material concreto para revisar antes de entrevista — não me
 - **Idempotência** — propriedade de rodar várias vezes com o mesmo input e chegar no mesmo output. No nosso caso: gravação sobrescrita por data. Em orquestração (Airflow), idempotência é o que permite re-disparar uma task sem medo.
 
 ### Dúvidas
-(preencher conforme rodar e ler o código)
+
+- O `dropna(how="all")` em preços é robusto para nossos 6 tickers, mas e se um dia o yfinance retornar uma linha com `fechamento` válido mas todos os outros NaN? Hoje a linha sobrevive ao filtro. Vale criar uma validação dbt na Etapa 4 que sinalize esse caso.
+- Pregão de leilão (dia útil com pregão parcial, ex: véspera de Carnaval) gera dado normal? Não testei explicitamente — vale verificar quando rodar a ingestão por algumas semanas e olhar os dados.
+- O `auto_adjust=False` me dá Open/High/Low/Close brutos e Adj Close separado. Mas só o Close tem versão ajustada — Open/High/Low brutos não são "ajustados" pelo Yahoo. Para retornos intraday seria preciso ajustar todos. Como nosso pipeline trabalha em granularidade diária, fechamento ajustado é suficiente, mas se algum dia migrar para intraday a regra muda.
 
 ### Descobertas
 
-Idempotência: semântica ≠ byte-a-byte. Descobri que comparar hash de arquivos Parquet entre duas execuções dá False mesmo quando o conteúdo é idêntico — PyArrow embute metadata com timestamp de escrita. O teste correto de idempotência em pipeline de dados é comparar o conteúdo lógico (DataFrame após sort_values + reset_index), não bytes. Airflow, dbt e Spark definem idempotência dessa forma.
+- **Idempotência** - semântica ≠ byte-a-byte. Descobri que comparar hash de arquivos Parquet entre duas execuções dá False mesmo quando o conteúdo é idêntico — PyArrow embute metadata com timestamp de escrita. O teste correto de idempotência em pipeline de dados é comparar o conteúdo lógico (DataFrame após sort_values + reset_index), não bytes. Airflow, dbt e Spark definem idempotência dessa forma.
+
 
 ---
 
@@ -103,11 +115,17 @@ Idempotência: semântica ≠ byte-a-byte. Descobri que comparar hash de arquivo
   de import.
 
 ### Dúvidas
-(preencher conforme rodar e ler o código)
+
+- Bucket único com prefixos funciona para projeto pequeno, mas em vaga real a separação por bucket é padrão. Vale entender melhor quando a granularidade IAM (permissão por bucket) supera a simplicidade de bucket único. Provavelmente quando há múltiplos times consumindo camadas diferentes — não é o nosso caso.
+- O cliente boto3 é instanciado a cada call de `salvar_particionado`. Para 1 dia (1 objeto) é irrelevante. Para o `--modo inicial` (1246 objetos), instanciamos 1 cliente para 1246 PUTs — eficiente. Mas e se um dia o pipeline rodar em paralelo (Spark, Dask)? Cada worker instanciaria seu próprio cliente; isso é o esperado em boto3 (clientes são thread-safe mas não devem ser compartilhados entre processos sem cuidado).
+- O `endpoint_url=http://localhost:9000` é HTTP, sem TLS. Em produção seria HTTPS com certificado. O código não muda — só a string do endpoint. Vale lembrar disso se algum dia migrar para S3 real.
 
 ### Descobertas
-ETag do MinIO ≠ MD5 quando há multipart upload. Para objetos pequenos como os nossos (~6KB), o ETag é o MD5 direto. Para objetos grandes via multipart upload (>5MB por padrão no boto3), o ETag passa a ser um hash composto e termina com -N onde N é o número de partes. Em pipelines de produção lidando com arquivos maiores, comparar ETags exige cuidado.
+- **ETag do MinIO ≠ MD5 quando há multipart upload.** Para objetos pequenos como os nossos (~6KB), o ETag é o MD5 direto. Para objetos grandes via multipart upload (>5MB por padrão no boto3), o ETag passa a ser um hash composto e termina com -N onde N é o número de partes. Em pipelines de produção lidando com arquivos maiores, comparar ETags exige cuidado.
 Validação de idempotência contra S3/MinIO usa boto3 get_object, não filesystem. Diferente da Etapa 1 onde bastava Get-FileHash, com object storage o teste correto é ler o objeto via API, materializar em DataFrame, e comparar conteúdo lógico. Reforça a lição da Etapa 1: idempotência em pipeline de dados é sempre semântica.
+- **`region_name` é obrigatório no boto3 mesmo apontando para localhost.** A signature v4 do S3 inclui a região no cálculo da assinatura, então o cliente precisa de uma. MinIO não valida o valor (aceita qualquer string), mas o boto3 valida que ela existe. Default `us-east-1` é a convenção. Pegadinha que aparece em entrevista: "por que você está mandando uma região para um servidor que está no seu laptop?" — resposta: signature v4 exige.
+- **PyArrow grava Int64 nullable como Arrow int64 com bitmap de validade, transparente entre escrita e leitura.** Não precisei de cast manual. O Parquet preserva o conceito de "valor faltante" no nível do formato, separado do valor em si. Em CSV isso seria impossível (NaN viraria string ou número mágico).
+- **mc-init como serviço Compose efêmero.** O serviço `mc-init` no docker-compose existe para criar o bucket na primeira execução, depois sai com exit 0. Vê-lo como "exited (0)" em `docker compose ps` é o estado correto. Padrão útil sempre que precisar de "setup uma vez, esquece" em ambiente containerizado.
 
 ---
 
