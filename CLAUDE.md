@@ -146,18 +146,19 @@ a escolha do usuário antes de codar**.
 
 Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a menos que o usuário peça explicitamente:
 
-**Etapa 1 — Ingestão:**
-- Preço bruto E ajustado preservados no raw layer
-- Granularidade do Parquet: 1 arquivo por data com todos os tickers
-- Idempotência por sobrescrita (semântica, não byte-a-byte)
-- Volume usa Int64 nullable do pandas (preserva NaN)
+**Etapa 1 — Ingestão:** preço bruto+ajustado, 1 arquivo Parquet por
+data, idempotência por sobrescrita, volume Int64 nullable.
 
-**Etapa 2 — Object storage:**
-- MinIO em Docker Compose dedicado (`docker-compose.minio.yml` na raiz)
-- Bucket único `b3-data` com prefixos por camada (`raw/`, `staging/`, `marts/`)
-- `storage.py` escreve EXCLUSIVAMENTE no MinIO (não há fallback local, não há flag --destino)
-- Credenciais via `.env` + python-dotenv (`.env.example` versionado)
-- Cliente S3 via boto3 direto (não s3fs, não pyarrow.fs)
+**Etapa 2 — Object storage:** MinIO em Compose dedicado, bucket único
+b3-data com prefixos por camada, storage.py escreve só no MinIO, boto3
+direto (não s3fs).
+
+**Etapa 3 — Warehouse:**
+- DuckDB persistente em arquivo na raiz (warehouse.duckdb, gitignored)
+- Schema `raw` como view sobre read_parquet do MinIO (não materializado)
+- httpfs como extensão que conecta DuckDB ↔ MinIO via HTTP
+- SQL exploratório em arquivos versionados (sql/exploratoria/) + notebook narrativo (notebooks/exploracao_etapa3.ipynb)
+- warehouse/conexao.py importa credenciais de ingestion.config (não duplica)
 
 ### Convenções de validação
 
@@ -170,11 +171,15 @@ Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a m
 b3-data-pipeline/
 ├── ingestion/              # Pipeline de ingestão (Etapa 1+)
 ├── scripts/                # Utilitários de validação e operação
+├── warehouse/              # Conexão e setup do DuckDB (Etapa 3+)
+├── sql/exploratoria/       # SQL exploratório versionado
+├── notebooks/              # Exploração e narrativa
 ├── data/raw/               # HISTÓRICO da Etapa 1; raw vive no MinIO
 ├── docs/                   # decisoes.md, NOTAS.md
 ├── docker-compose.minio.yml
 ├── .env.example            # Versionado
 ├── .env                    # Gitignored
+├── warehouse.duckdb        # Gitignored, regenerável via warehouse.setup
 └── requirements.txt
 ```
 

@@ -131,17 +131,152 @@ Validação de idempotência contra S3/MinIO usa boto3 get_object, não filesyst
 
 ## Etapa 3 — Warehouse analítico com DuckDB
 
-**Início:** —
-**Fim:** —
+**Início:** 2026-05-19
+**Fim:** 2026-05-19
 
 ### Conceitos
-(em branco até começar)
+
+- **DuckDB.** Banco analítico embarcado, colunar, sem servidor. Roda
+  dentro do processo Python via `import duckdb`. SQLite está para
+  Postgres assim como DuckDB está para BigQuery — embarcado vs servidor,
+  OLAP vs OLTP. O arquivo `.duckdb` é o banco inteiro: schemas, views,
+  tabelas, num único binário. Só um processo pode escrever por vez;
+  múltiplos podem ler simultaneamente (`read_only=True`).
+
+- **Extensão httpfs.** O que viabiliza o DuckDB ler do MinIO via HTTP
+  usando a S3 API. Sem ela, `read_parquet('s3://...')` daria erro. A
+  extensão é instalada uma vez (`INSTALL httpfs`) e carregada por sessão
+  (`LOAD httpfs`). Configuração via `SET s3_endpoint`, `SET
+  s3_use_ssl`, `SET s3_url_style`, mais credenciais.
+
+- **View vs tabela materializada.** View é query salva com nome — não
+  armazena dado, re-executa toda vez. Tabela materializada copia o
+  resultado para o disco e fica "congelada" até alguém atualizar.
+  Trade-off central: view sempre fresca, custo de re-execução; tabela
+  sempre rápida, risco de ficar desatualizada. Escolhi view para
+  `raw.cotacoes` porque queria que novos Parquet no MinIO aparecessem
+  automaticamente sem rematerializar.
+
+- **hive_partitioning.** Convenção que transforma trechos do path em
+  colunas virtuais. `s3://b3-data/raw/cotacoes/ano=2026/mes=05/dia=15/...`
+  expõe `ano`, `mes`, `dia` como se fossem colunas da tabela. Filtrar
+  por essas colunas habilita **partition pruning** — o DuckDB consulta
+  apenas os arquivos cujo path casa com o filtro, em vez de ler tudo.
+  Ganho real quando o dataset cresce.
+
+- **Window functions.** Função que opera sobre uma janela de linhas
+  sem colapsar elas (diferente do GROUP BY). Anatomia:
+  `função(args) OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN ...)`.
+  `PARTITION BY` cria janelas independentes; `ORDER BY` dá ordem
+  interna; `ROWS BETWEEN` define moldura móvel. Funções principais:
+  `LAG`/`LEAD` (linha anterior/posterior), `ROW_NUMBER`/`RANK`/
+  `DENSE_RANK` (ranking), `FIRST_VALUE`/`LAST_VALUE` (extremos da
+  janela), `AVG/SUM/MAX OVER (...)` (agregação preservando linhas).
+  Habilidade SQL mais durável e portável (sintaxe idêntica entre
+  DuckDB, Postgres, BigQuery, Snowflake).
+
+- **CTEs (Common Table Expressions, cláusula WITH).** Maneira de
+  nomear subqueries para tornar SQL legível. Cada CTE pode referenciar
+  as anteriores. Não materializa nada por padrão — é só açúcar
+  sintático. Padrão "gaps and islands" (usado para detectar sequências)
+  é exemplo clássico onde CTEs encadeadas tornam a lógica óbvia.
+
+- **Anti-join via LEFT JOIN + IS NULL.** Padrão para encontrar "o que
+  existe num conjunto mas não no outro". `LEFT JOIN B ON ... WHERE
+  B.id IS NULL` retorna as linhas de A sem correspondente em B. Usado
+  na query 05 para detectar gaps de pregão por ticker.
+
+- **Por que o raw fica fora do warehouse.** Quatro razões: (1) custo —
+  object storage é barato, warehouse é caro; (2) imutabilidade — fora
+  do warehouse ninguém roda UPDATE acidental no raw; (3)
+  reprocessabilidade — bug na transformação não exige re-ingerir da
+  fonte; (4) múltiplos consumidores — o mesmo raw pode alimentar
+  vários warehouses ou ferramentas. Esse desacoplamento é o que torna
+  a arquitetura "lakehouse" possível.
+
+- **Diferença CSV vs Parquet (revisita).** CSV é orientado a linha:
+  ler uma coluna exige ler o arquivo inteiro. Parquet é colunar: ler
+  uma coluna lê só os bytes dela. Mais: schema embutido (sem
+  adivinhação de tipo), compressão por coluna (muito melhor),
+  estatísticas por bloco (habilita predicate pushdown). Custo: binário,
+  não abre em editor de texto.
 
 ### Dúvidas
-(em branco até começar)
+
+- Quando usar `RANK`, `DENSE_RANK` e `ROW_NUMBER`? Sei a diferença
+  conceitual (RANK deixa lacunas após empate, DENSE_RANK não, ROW_NUMBER
+  não tem empate), mas qual usar em entrevista quando o enunciado é
+  ambíguo? Revisar antes de entrevista.
+
+- Materialização do dbt vs view: qual o critério em projeto real para
+  decidir entre `view`, `table` e `incremental`? Em projeto pequeno
+  como o meu, view basta — mas quando o custo de re-execução começa a
+  doer? Resposta provável vem na Etapa 4 ao tocar dbt na prática.
+
+- A view `raw.cotacoes` re-lê o MinIO a cada consulta ou o DuckDB
+  cacheia? Notei que a primeira query é mais lenta que as subsequentes
+  — cache de metadado, de dado, ou ambos?
+
+- `LAST_VALUE` por padrão pega só até a linha atual, não até o fim da
+  janela. Pegadinha clássica. Sempre que eu quiser "valor final
+  verdadeiro", preciso explicitar `ROWS BETWEEN UNBOUNDED PRECEDING AND
+  UNBOUNDED FOLLOWING`. Entendi conceitualmente, mas vale praticar em
+  problemas reais para internalizar.
+
+- O padrão "gaps and islands" (soma cumulativa de flag para criar
+  grupos) é elegante mas eu travei na primeira tentativa. Vale praticar
+  variações além de "sequência de altas consecutivas" — ex: períodos
+  ininterruptos sem queda > 5%, sequência de volume acima da média.
 
 ### Descobertas
-(em branco até começar)
+
+- **Divergência silenciosa entre MinIO e filesystem na Etapa 2.** A
+  migração de storage da Etapa 2 trocou o destino do `storage.py` para
+  o MinIO, mas a carga histórica gerada na Etapa 1 ficou apenas no
+  filesystem local — nunca foi replicada para o bucket. Só percebi
+  na Etapa 3, quando o DuckDB reportou 6 linhas em vez de ~7.500 ao
+  consultar `raw.cotacoes`. Lição prática: migração de storage exige
+  replicação consciente do estado anterior, ou o pipeline parece
+  funcionar lendo apenas o último dia ingerido pós-migração. Em
+  produção isso seria backfill explícito; aqui foi reexecução acidental
+  descoberta uma etapa depois. Material direto para entrevista quando
+  perguntarem "conta um bug não óbvio que você descobriu no seu
+  pipeline".
+
+- **`hive_partitioning=true` expõe partições como colunas virtuais.**
+  Após o setup, `DESCRIBE raw.cotacoes` mostra `ano`, `mes`, `dia` ao
+  lado das colunas reais do Parquet. Não é mágica — o DuckDB lê o path
+  do arquivo e parseia os segmentos `chave=valor`. Crítico para
+  performance: filtrar `WHERE ano = 2026 AND mes = 5` faz o DuckDB
+  ignorar os arquivos cujo path não casa, sem nem abrir.
+
+- **Latência da primeira query vs subsequentes.** A primeira `SELECT
+  COUNT(*) FROM raw.cotacoes` levou alguns segundos (lê metadata dos
+  ~1246 objetos via HTTP). Queries depois ficam rápidas — DuckDB
+  cacheia metadados de objetos S3 dentro da sessão. Fechou a sessão e
+  abriu de novo, paga o custo de novo. Pegadinha real: se um benchmark
+  rodar só queries "frias", a leitura parece lenta; se rodar várias
+  vezes, parece rápida. Sempre fazer warmup antes de medir.
+
+- **Servidor e cliente MinIO são imagens Docker separadas.**
+  `minio/minio` é o servidor (processo permanente, expõe API S3 e
+  console). `minio/mc` é o cliente CLI, usado como init container para
+  criar o bucket automaticamente. Vê-los como duas imagens é o
+  esperado, não duplicação. Padrão consagrado: Postgres tem
+  `postgres` + `psql`; Redis tem `redis-server` + `redis-cli`.
+
+- **`SET` no DuckDB não aceita parametrização (?) como `SELECT`.** A
+  documentação não destaca isso, e o erro é confuso quando você tenta
+  passar credencial via `con.execute("SET s3_secret_access_key = ?",
+  [valor])`. Em versões recentes do DuckDB funciona; em mais antigas
+  precisa concatenar string. Cuidado em logs para não vazar credencial.
+
+- **View como abstração viva, não snapshot.** Criar view com
+  `WHERE data >= (SELECT MAX(data) - INTERVAL 30 DAY FROM ...)` é
+  diferente de `WHERE data >= '2026-04-15'`. A primeira envelhece
+  bem; a segunda quebra em duas semanas. Princípio geral: prefira
+  lógica computada a literais quando a lógica representa "última N
+  unidades", "ativos hoje", "exercício corrente".
 
 ---
 
