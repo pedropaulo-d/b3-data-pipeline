@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> Este arquivo **não é instrução para o usuário** — é contexto persistente carregado em toda sessão do Claude Code neste repositório. Trate-o como diretriz operacional. Este arqyuivo não pode passar de 200 linhas.
+> Este arquivo **não é instrução para o usuário** — é contexto persistente carregado em toda sessão do Claude Code neste repositório. Trate-o como diretriz operacional. Este arquivo não pode passar de 200 linhas.
 
 ---
 
@@ -89,15 +89,8 @@ a escolha do usuário antes de codar**.
    em `docs/decisoes.md`, aponte o conflito antes de executar.
 5. **Não pule etapas do plano do projeto.** A sequência é pedagógica para o
    usuário; antecipar Airflow antes da Etapa 5 não ajuda.
-
----
-
-## Comportamento esperado em sessões
-
-- **Confirme a etapa atual** antes de propor mudanças amplas. As etapas são incrementais; não pule.
-- **Conecte cada tarefa ao "por quê"**: por que essa peça existe, qual problema ela resolve, o que aconteceria sem ela.
-- **Não introduza ferramentas fora da etapa corrente** (sem Docker na Etapa 1, sem dbt na Etapa 3, etc.).
-- **Sinalize delegação excessiva**: se o usuário pedir algo que cai em "❌", lembre-o do escopo de aprendizado antes de executar.
+6. **Sinalize delegação excessiva**: se o usuário pedir algo que cai em "❌",
+   lembre-o do escopo de aprendizado antes de executar.
 
 ---
 
@@ -113,13 +106,9 @@ a escolha do usuário antes de codar**.
 
 ### Estrutura de dados
 
-- Formato em disco: **Parquet** (não CSV em raw)
-- **Particionamento por data** no raw layer:
-  ```
-  data/raw/cotacoes/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet
-  ```
-- **Imutabilidade**: raw layer é append-only; correções viram nova partição.
-- **Idempotência**: rodar o mesmo script duas vezes não deve gerar duplicatas nem corromper estado.
+- Formato em disco: **Parquet** com particionamento Hive `ano=YYYY/mes=MM/dia=DD/cotacoes.parquet` (raw layer mora no MinIO desde a Etapa 2; ver "Escopo travado").
+- **Imutabilidade**: raw é append-only; correções viram nova partição.
+- **Idempotência semântica**: rodar duas vezes não duplica nem corrompe estado; bytes podem variar (metadata do PyArrow), conteúdo lógico não.
 
 ### Git
 
@@ -134,15 +123,66 @@ a escolha do usuário antes de codar**.
 
 ---
 
-## Escopo travado
+## Escopo travado (não alterar sem discussão)
 
-- **Tickers (6):** PETR4, VALE3, ITUB4, BBDC4, WEGE3, ABEV3
+### Escopo de domínio
+
+- **Tickers:** PETR4, VALE3, ITUB4, BBDC4, WEGE3, ABEV3
 - **Histórico inicial:** 5 anos
-- **Stack:** Python + MinIO + DuckDB + dbt + Airflow + Streamlit
-- **Ambiente:** local (sem cloud)
-- **Python:** 3.11+, pip + venv
+- **Granularidade:** diária (1 linha = 1 ticker × 1 data)
 
-Não sugira mudar nenhum destes sem o usuário pedir explicitamente.
+### Stack e ambiente
+
+- **Linguagem:** Python 3.11+
+- **Gerenciador de pacotes:** pip + venv (não Poetry, não uv)
+- **Object storage:** MinIO via Docker Compose
+- **Warehouse:** DuckDB (Etapa 3)
+- **Transformação:** dbt-duckdb (Etapa 4)
+- **Orquestração:** Apache Airflow via Docker Compose (Etapa 5)
+- **Dashboard:** Streamlit (Etapa 7)
+- **Ambiente:** local, single-host
+
+### Decisões arquiteturais consolidadas
+
+Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a menos que o usuário peça explicitamente:
+
+**Etapa 1 — Ingestão:**
+- Preço bruto E ajustado preservados no raw layer
+- Granularidade do Parquet: 1 arquivo por data com todos os tickers
+- Idempotência por sobrescrita (semântica, não byte-a-byte)
+- Volume usa Int64 nullable do pandas (preserva NaN)
+
+**Etapa 2 — Object storage:**
+- MinIO em Docker Compose dedicado (`docker-compose.minio.yml` na raiz)
+- Bucket único `b3-data` com prefixos por camada (`raw/`, `staging/`, `marts/`)
+- `storage.py` escreve EXCLUSIVAMENTE no MinIO (não há fallback local, não há flag --destino)
+- Credenciais via `.env` + python-dotenv (`.env.example` versionado)
+- Cliente S3 via boto3 direto (não s3fs, não pyarrow.fs)
+
+### Convenções de validação
+
+- Idempotência semântica validada empiricamente em cada etapa que toca storage. Script reutilizável em `scripts/validar_idempotencia.py`.
+- Sanity checks informais (contagem de arquivos vs calendário B3, etc) registrados em `docs/NOTAS.md` como descoberta.
+
+### Estrutura do repositório consolidada
+
+```
+b3-data-pipeline/
+├── ingestion/              # Pipeline de ingestão (Etapa 1+)
+├── scripts/                # Utilitários de validação e operação
+├── data/raw/               # HISTÓRICO da Etapa 1; raw vive no MinIO
+├── docs/                   # decisoes.md, NOTAS.md
+├── docker-compose.minio.yml
+├── .env.example            # Versionado
+├── .env                    # Gitignored
+└── requirements.txt
+```
+
+Pastas futuras: `dbt/` (Etapa 4), `airflow/` (Etapa 5), `dashboard/` (Etapa 7).
+
+---
+
+Mudanças de escopo são discussão consciente entre Claude Code e usuário, não otimização silenciosa.
 
 ---
 
