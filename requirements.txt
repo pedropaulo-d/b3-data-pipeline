@@ -17,7 +17,8 @@ python-dotenv>=1.0.0
 # ============================================================
 # Etapa 3 — Warehouse analítico (DuckDB)
 # ============================================================
-# duckdb>=0.10.0
+duckdb>=0.10.0
+plotly>=5.20.0
 
 # ============================================================
 # Etapa 4 — Transformações (dbt)
@@ -34,4 +35,4 @@ python-dotenv>=1.0.0
 # Etapa 7 — Dashboard
 # ============================================================
 # streamlit>=1.32.0
-# plotly>=5.20.0
+# (plotly já entra na Etapa 3 para o notebook exploratório)

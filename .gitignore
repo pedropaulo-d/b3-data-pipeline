@@ -35,6 +35,12 @@ data/marts/
 !data/marts/.gitkeep
 
 # ============================================================
+# Etapa 3 — DuckDB warehouse local (regenerável a partir do MinIO)
+# ============================================================
+warehouse.duckdb
+warehouse.duckdb.wal
+
+# ============================================================
 # Secrets e credenciais
 # ============================================================
 .env

@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 2 — Object storage com MinIO ✅. Próxima: Warehouse analítico com DuckDB.
+**Status atual:** Etapa 3 — Warehouse analítico com DuckDB ✅. Próxima: Transformações com dbt.
 
 ---
 
@@ -36,7 +36,7 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
                                        ▼
   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
   │ yfinance │──▶ │  Python  │──▶ │  MinIO   │──▶ │  DuckDB  │──▶ │   dbt    │
-  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │   (WH)   │    │ (models) │
+  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │ (WH   ✅) │    │ (models) │
   └──────────┘    └──────────┘    └──────────┘    └──────────┘    └────┬─────┘
                                                                        │
                                                                        ▼
@@ -73,8 +73,8 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 | 0     | Preparação (estrutura, docs, escopo)| ✅ Concluída   |
 | 1     | Ingestão manual com Python puro     | ✅ Concluída   |
 | 2     | Object storage com MinIO            | ✅ Concluída   |
-| 3     | Warehouse analítico com DuckDB      | 🔜 Próxima     |
-| 4     | Transformações com dbt              | ⏳ Pendente    |
+| 3     | Warehouse analítico com DuckDB      | ✅ Concluída   |
+| 4     | Transformações com dbt              | 🔜 Próxima     |
 | 5     | Orquestração com Airflow (Docker)   | ⏳ Pendente    |
 | 6     | Indicadores e métricas financeiras  | ⏳ Pendente    |
 | 7     | Dashboard com Streamlit             | ⏳ Pendente    |
@@ -88,16 +88,22 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 b3-data-pipeline/
 ├── ingestion/                  # Scripts de download e persistência (Etapa 1+2)
 │   └── README.md
+├── warehouse/                  # Conexão e setup do DuckDB local (Etapa 3)
+│   └── README.md
+├── sql/
+│   └── exploratoria/           # Queries .sql versionadas, executadas pelo notebook
 ├── scripts/                    # Utilitários de validação e operação (não-pipeline)
 │   └── README.md
 ├── data/
 │   └── raw/                    # Histórico da Etapa 1 (não mais escrito; raw atual mora no MinIO)
 │       └── .gitkeep
 ├── notebooks/                  # Exploração ad-hoc em Jupyter
+│   └── exploracao_etapa3.ipynb
 ├── docs/
 │   ├── decisoes.md             # Decisões técnicas com racional
 │   └── NOTAS.md                # Caderno de aprendizados por etapa
 ├── docker-compose.minio.yml    # MinIO + mc-init (Etapa 2)
+├── warehouse.duckdb            # Arquivo do warehouse local (gitignored, regenerável)
 ├── .env.example                # Template das credenciais (versionado)
 ├── .env                        # Credenciais reais (gitignored)
 ├── .gitignore
@@ -143,8 +149,15 @@ docker compose -f docker-compose.minio.yml up -d
 # Console web: http://localhost:9001 (usuário/senha do .env)
 # API S3:      http://localhost:9000
 
-# 8. Pronto. Rodar a ingestão:
+# 8. Rodar a ingestão:
 python -m ingestion.main --modo inicial
+
+# 9. Setup do warehouse DuckDB — cria o schema raw e a view raw.cotacoes
+# apontando para o MinIO. Imprime contagem, tickers e range de datas.
+python -m warehouse.setup
+
+# 10. (Opcional) Abrir o notebook exploratório
+jupyter notebook notebooks/exploracao_etapa3.ipynb
 ```
 
 Para derrubar o MinIO preservando os dados:
