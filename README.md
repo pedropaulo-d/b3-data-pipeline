@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 1 — Ingestão manual com Python puro ✅. Próxima: Object storage com MinIO.
+**Status atual:** Etapa 2 — Object storage com MinIO ✅. Próxima: Warehouse analítico com DuckDB.
 
 ---
 
@@ -25,6 +25,8 @@ Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histó
 
 ## Arquitetura prevista
 
+Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes.
+
 ```
                           ┌──────────────────────────┐
                           │        Airflow           │
@@ -34,7 +36,7 @@ Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histó
                                        ▼
   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
   │ yfinance │──▶ │  Python  │──▶ │  MinIO   │──▶ │  DuckDB  │──▶ │   dbt    │
-  │ (origem) │    │ (ingest) │    │  (raw)   │    │   (WH)   │    │ (models) │
+  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │   (WH)   │    │ (models) │
   └──────────┘    └──────────┘    └──────────┘    └──────────┘    └────┬─────┘
                                                                        │
                                                                        ▼
@@ -43,6 +45,11 @@ Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histó
                                                                 │ (dashboard)  │
                                                                 └──────────────┘
 ```
+
+> A partir da Etapa 2 o raw layer mora **exclusivamente no MinIO**
+> (`s3://b3-data/raw/cotacoes/...`). A pasta `data/raw/` no filesystem
+> é histórica da Etapa 1 — o `.gitkeep` é mantido para documentar a
+> convenção, mas nada é gravado lá.
 
 ---
 
@@ -65,8 +72,8 @@ Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histó
 |-------|-------------------------------------|----------------|
 | 0     | Preparação (estrutura, docs, escopo)| ✅ Concluída   |
 | 1     | Ingestão manual com Python puro     | ✅ Concluída   |
-| 2     | Object storage com MinIO            | 🔜 Próxima     |
-| 3     | Warehouse analítico com DuckDB      | ⏳ Pendente    |
+| 2     | Object storage com MinIO            | ✅ Concluída   |
+| 3     | Warehouse analítico com DuckDB      | 🔜 Próxima     |
 | 4     | Transformações com dbt              | ⏳ Pendente    |
 | 5     | Orquestração com Airflow (Docker)   | ⏳ Pendente    |
 | 6     | Indicadores e métricas financeiras  | ⏳ Pendente    |
@@ -79,18 +86,23 @@ Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histó
 
 ```
 b3-data-pipeline/
-├── ingestion/             # Scripts de download e persistência (Etapa 1)
+├── ingestion/                  # Scripts de download e persistência (Etapa 1+2)
+│   └── README.md
+├── scripts/                    # Utilitários de validação e operação (não-pipeline)
 │   └── README.md
 ├── data/
-│   └── raw/               # Parquet particionado (gitignored)
+│   └── raw/                    # Histórico da Etapa 1 (não mais escrito; raw atual mora no MinIO)
 │       └── .gitkeep
-├── notebooks/             # Exploração ad-hoc em Jupyter
+├── notebooks/                  # Exploração ad-hoc em Jupyter
 ├── docs/
-│   ├── decisoes.md        # Decisões técnicas com racional
-│   └── NOTAS.md           # Caderno de aprendizados por etapa
+│   ├── decisoes.md             # Decisões técnicas com racional
+│   └── NOTAS.md                # Caderno de aprendizados por etapa
+├── docker-compose.minio.yml    # MinIO + mc-init (Etapa 2)
+├── .env.example                # Template das credenciais (versionado)
+├── .env                        # Credenciais reais (gitignored)
 ├── .gitignore
 ├── README.md
-├── CLAUDE.md              # Diretrizes para sessões com Claude Code
+├── CLAUDE.md                   # Diretrizes para sessões com Claude Code
 └── requirements.txt
 ```
 
@@ -99,6 +111,8 @@ b3-data-pipeline/
 ---
 
 ## Setup local
+
+Pré-requisitos: Python 3.11+, Docker e Docker Compose.
 
 ```bash
 # 1. Clone do repositório
@@ -116,6 +130,28 @@ source .venv/bin/activate
 
 # 4. Instalar dependências
 pip install -r requirements.txt
+
+# 5. Configurar credenciais do MinIO (raw layer)
+cp .env.example .env       # Linux/macOS
+copy .env.example .env     # Windows
+# Edite .env se quiser trocar credenciais; defaults funcionam para uso local.
+
+# 6. Subir o MinIO (container + criação automática do bucket)
+docker compose -f docker-compose.minio.yml up -d
+
+# 7. Aguardar ~10s para o healthcheck passar e o bucket ser criado.
+# Console web: http://localhost:9001 (usuário/senha do .env)
+# API S3:      http://localhost:9000
+
+# 8. Pronto. Rodar a ingestão:
+python -m ingestion.main --modo inicial
+```
+
+Para derrubar o MinIO preservando os dados:
+
+```bash
+docker compose -f docker-compose.minio.yml down       # remove containers, mantém volume
+docker compose -f docker-compose.minio.yml down -v    # remove TAMBÉM o volume (apaga raw)
 ```
 
 ---
@@ -129,7 +165,11 @@ As decisões de arquitetura e seus trade-offs estão documentadas em [`docs/deci
 3. **6 tickers em vez do Ibovespa inteiro** — 4 setores cobertos, escalar é trivial; o número absoluto soa menos impressivo.
 4. **Preço bruto e ajustado lado a lado no raw** (Etapa 1) — imutabilidade do raw; permite recalcular ajustes sem re-baixar.
 5. **Arquivo Parquet por data, tickers juntos** (Etapa 1) — evita micro-arquivos por ticker e mantém partition pruning eficiente.
-6. **Reexecução sobrescreve a partição** (Etapa 1) — idempotência simples no raw; correções viram nova execução, não nova versão.
+6. **Reexecução sobrescreve a partição** (Etapa 1) — idempotência semântica no raw; correções viram nova execução, não nova versão.
+7. **MinIO em Docker Compose dedicado na raiz** (Etapa 2) — portabilidade e preparação para Airflow integrar o mesmo arquivo; abro mão de rodar 100% sem Docker.
+8. **Bucket único com prefixos por camada** (Etapa 2) — simplicidade; refatoraria se permissões granulares por camada virassem requisito.
+9. **Trocar storage local por S3 direto, sem abstração** (Etapa 2) — YAGNI: raw mora em object storage, ponto; aceito perder execução 100% offline.
+10. **boto3 em vez de s3fs/pyarrow.fs** (Etapa 2) — cliente oficial, é o que aparece em vaga; verboso, mas explícito sobre o protocolo S3.
 
 ---
 

@@ -120,3 +120,64 @@ Nenhuma dessas variações afeta camadas downstream (DuckDB, dbt, dashboard), po
 - **Parquet preserva nullability.** PyArrow grava `Int64` do pandas como inteiro com bitmap de validade, sem precisar de mágica adicional.
 
 **Trade-off aceito.** O tipo `Int64` do pandas exige cuidado em comparações e agregações em Python (`NaN` propaga; `==` não funciona contra `NA`). Aceitável porque a manipulação analítica acontece em **SQL no DuckDB/dbt** a partir da Etapa 3 — e em SQL, `NULL` é tratado naturalmente em agregações (`SUM` ignora, `COUNT(*)` inclui, `COUNT(volume)` não).
+
+---
+
+## 2026-05-18 — Etapa 2 — MinIO em Docker, Compose dedicado na raiz
+
+**Contexto.** O raw layer precisa migrar de filesystem local para object storage. Opções: (a) usar bucket S3 real (custo + IAM); (b) rodar MinIO via binário nativo; (c) MinIO em Docker Compose. Outra dimensão: onde mora o arquivo Compose — em uma pasta `infra/`, dentro de `ingestion/`, ou na raiz do repositório.
+
+**Decisão.** MinIO em **Docker Compose dedicado** (`docker-compose.minio.yml`), arquivo na **raiz do repositório**. Um único serviço `minio` + um auxiliar `mc-init` que cria o bucket na primeira subida.
+
+**Racional.**
+- **Portabilidade.** Qualquer máquina com Docker roda. Zero instalação nativa, zero conflito de versão.
+- **Preparação para Airflow.** A Etapa 5 vai estender o mesmo arquivo Compose adicionando o serviço do Airflow, que precisa estar na mesma network do MinIO para resolver `minio:9000`. Manter o arquivo na raiz e visível agora simplifica o merge depois.
+- **`mc-init` automatiza setup.** O usuário não precisa abrir o console web só para criar o bucket — a primeira execução do Compose já deixa tudo pronto.
+
+**Trade-off aceito.** Cria **dependência de Docker** para qualquer pessoa que rode o projeto. Não dá mais para executar a ingestão 100% offline em uma máquina sem Docker. Mitigação: Docker Desktop é padrão de mercado e o setup é uma linha de comando.
+
+---
+
+## 2026-05-18 — Etapa 2 — Bucket único com prefixos por camada
+
+**Contexto.** Em um data lake clássico, há duas formas de separar raw / staging / marts: (a) buckets distintos (`b3-raw`, `b3-staging`, `b3-marts`); (b) bucket único com prefixos (`b3-data/raw/...`, `b3-data/staging/...`).
+
+**Decisão.** **Bucket único** chamado `b3-data`, com prefixos internos por camada. O raw layer ocupa `b3-data/raw/cotacoes/...`; staging e marts ocuparão `b3-data/staging/...` e `b3-data/marts/...` na Etapa 4.
+
+**Racional.**
+- **Simplicidade.** Um bucket, um conjunto de credenciais, uma configuração no `.env`. Operacionalmente menos coisa para errar.
+- **Padrão comum em lakes pequenos a médios.** Buckets separados fazem sentido quando permissões IAM precisam ser granulares por camada (ex.: dbt só pode ler raw, não escrever; analista só pode ler marts). Em um projeto pessoal local, esse benefício não se materializa.
+- **Layout previsível para downstream.** DuckDB e dbt receberão o prefixo como parâmetro de configuração; trocar `raw/` por `staging/` é mudar um caminho, não uma credencial.
+
+**Trade-off aceito.** Se permissões granulares por camada virarem requisito (ex.: deploy em produção real com múltiplos consumidores), será preciso **refatorar para múltiplos buckets** — mudança simples no IaC, mas mudança. Aceitável porque o projeto não tem esse requisito agora e o custo da refatoração futura é baixo.
+
+---
+
+## 2026-05-18 — Etapa 2 — Trocar storage local por S3 direto, sem abstração
+
+**Contexto.** Na Etapa 1 o `storage.py` escrevia em filesystem (`Path`). Ao migrar para MinIO, há duas escolas: (a) criar uma camada de abstração (`StorageBackend` com implementações `LocalStorage` e `S3Storage`, escolhida por configuração ou flag CLI); (b) trocar direto — raw layer mora em S3 e ponto.
+
+**Decisão.** **Trocar direto.** O `storage.py` passa a escrever exclusivamente no MinIO via boto3. Não há flag para alternar backend, não há classe `StorageBackend`, não há fallback para local.
+
+**Racional.**
+- **YAGNI.** A abstração só vale se houver um segundo backend real. "Talvez eu queira voltar para filesystem" não é um segundo backend — é incerteza disfarçada de flexibilidade.
+- **Direção do projeto é clara.** O pipeline real (Etapas 3 a 7) vai operar contra MinIO. Manter um caminho local "para emergência" é manter código morto.
+- **Erro fica explícito.** Se o MinIO está fora, a falha aparece no setup (passo de subir o Compose), não em runtime escondido por fallback silencioso.
+- **Menos código a manter.** Cada abstração inventada custa testes, documentação e dúvida ("qual o backend default mesmo?"). Não há ganho aqui que justifique o custo.
+
+**Trade-off aceito.** Perde-se a capacidade de **rodar a ingestão 100% offline** — o Docker precisa estar funcionando. Aceitável porque object storage é peça central das etapas seguintes; rodar sem ele já não testaria o caminho real.
+
+---
+
+## 2026-05-18 — Etapa 2 — boto3 direto em vez de s3fs ou pyarrow.fs
+
+**Contexto.** Para escrever em S3 a partir de pandas, há três caminhos: (a) `boto3` direto, com Parquet em buffer de memória (`io.BytesIO`) e `put_object`; (b) `s3fs`, que expõe S3 como filesystem virtual e permite `df.to_parquet("s3://bucket/key.parquet")`; (c) `pyarrow.fs.S3FileSystem`, integrado ao PyArrow.
+
+**Decisão.** Usar **`boto3` direto**. Escrever o DataFrame em `io.BytesIO` com `df.to_parquet(buffer, engine="pyarrow")`, depois `s3.put_object(Body=buffer.getvalue())`.
+
+**Racional.**
+- **Cliente oficial AWS.** É o que aparece em descrição de vaga de engenharia de dados. Saber configurar `endpoint_url`, `signature_version='s3v4'`, `region_name` é exatamente o tipo de detalhe que cai em entrevista.
+- **MinIO é S3-compatível por construção.** O mesmo código que aponta para `http://localhost:9000` aponta para `https://s3.amazonaws.com` com nada mais que troca de endpoint e credencial — esse é o sentido de "compatível".
+- **Sem mágica.** `s3fs` esconde paginação, retries, multipart upload, autenticação, addressing style. Tudo ótimo em produção; tudo problema quando algo falha e você não sabe onde olhar. Para um projeto cujo objetivo é **entender a stack**, ver os parâmetros explícitos é o ponto.
+
+**Trade-off aceito.** O código é **mais verboso** que `df.to_parquet("s3://...")` em uma linha. Aceito porque o código verboso explicita o que está acontecendo no protocolo S3 (signature v4, path-style addressing, content body) — exatamente o conhecimento que o projeto quer construir.

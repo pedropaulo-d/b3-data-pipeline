@@ -1,45 +1,84 @@
-"""Persistência do DataFrame em Parquet particionado por data.
+"""Persistência do DataFrame em Parquet particionado por data no MinIO.
 
-Layout fixado em ``docs/decisoes.md`` e ``CLAUDE.md``:
+A partir da Etapa 2, o raw layer mora **exclusivamente em object storage**
+(MinIO local, compatível S3). O layout do bucket reproduz exatamente o
+que existia em filesystem na Etapa 1:
 
-    data/raw/cotacoes/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet
+    s3://b3-data/raw/cotacoes/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet
 
-Cada arquivo contém **uma linha por ticker** para aquela data (no caso de
-pregão normal com 6 tickers ativos, 6 linhas). A escrita é **idempotente
-por sobrescrita**: rodar o pipeline duas vezes para o mesmo intervalo
-produz o mesmo conjunto de arquivos com o mesmo conteúdo.
+Decisões refletidas neste módulo (registradas em ``docs/decisoes.md``):
+
+- **boto3 direto** em vez de ``s3fs`` ou ``pyarrow.fs.S3FileSystem``:
+  cliente oficial AWS, é o que aparece em vaga e demonstra entendimento
+  do protocolo S3.
+- **Buffer em memória** (``io.BytesIO``) com ``df.to_parquet`` +
+  ``put_object``: simples e suficiente para os volumes do projeto. Sem
+  upload multipart aqui — cada objeto tem alguns KB.
+- **Sobrescrita silenciosa**: ``put_object`` no S3 substitui o objeto se
+  a chave já existir. É a base da idempotência semântica do raw.
 """
 
+import io
 import logging
-from pathlib import Path
+from datetime import date
 
+import boto3
 import pandas as pd
+from botocore.client import Config
+from botocore.exceptions import ClientError, EndpointConnectionError
 
-from ingestion.config import COLUNAS_SAIDA
+from ingestion.config import (
+    COLUNAS_SAIDA,
+    MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_REGION,
+    MINIO_SECRET_KEY,
+    RAW_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def salvar_particionado(df: pd.DataFrame, base_path: Path) -> int:
-    """Salva o DataFrame "long" em Parquet particionado por data.
+def _criar_cliente_s3():
+    """Constrói um cliente boto3 S3 apontando para o MinIO.
 
-    Para cada data presente em ``df["data"]``, grava
-    ``{base_path}/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet`` com as linhas
-    correspondentes àquela data. Se o arquivo já existir, é sobrescrito —
-    essa é a propriedade de idempotência do raw layer.
+    ``signature_version='s3v4'`` é obrigatório para autenticar contra o
+    MinIO. ``addressing_style='path'`` força URLs do tipo
+    ``http://endpoint/bucket/key`` em vez de ``http://bucket.endpoint/key``
+    — virtual-hosted style não funciona em endpoint sem DNS wildcard.
+    """
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=MINIO_ACCESS_KEY,
+        aws_secret_access_key=MINIO_SECRET_KEY,
+        region_name=MINIO_REGION,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+
+
+def salvar_particionado(df: pd.DataFrame) -> int:
+    """Grava o DataFrame "long" em Parquet particionado por data no MinIO.
+
+    Para cada data presente em ``df["data"]``, escreve um objeto no
+    bucket configurado seguindo o esquema
+    ``raw/cotacoes/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet``. Objetos
+    pré-existentes são sobrescritos (idempotência semântica garantida —
+    ver ``docs/decisoes.md``).
 
     Args:
         df: DataFrame no formato long produzido por
             :func:`ingestion.download.baixar_cotacoes`.
-        base_path: Raiz das partições (tipicamente
-            :data:`ingestion.config.RAW_PATH`).
 
     Returns:
-        Número de arquivos efetivamente escritos (igual ao número de datas
-        únicas em ``df``).
+        Número de objetos efetivamente escritos (igual ao número de
+        datas únicas em ``df``).
 
     Raises:
         ValueError: Se ``df`` não tiver o schema esperado.
+        RuntimeError: Se o MinIO estiver inacessível, ou se o S3
+            retornar erro na chamada de upload.
     """
     if list(df.columns) != COLUNAS_SAIDA:
         raise ValueError(
@@ -51,43 +90,62 @@ def salvar_particionado(df: pd.DataFrame, base_path: Path) -> int:
         logger.info("DataFrame vazio — nada a gravar.")
         return 0
 
-    arquivos_escritos = 0
-    # groupby preservando a chave para iterar (data, sub-df).
-    for data_pregao, grupo in df.groupby("data", sort=True):
-        destino = _caminho_particao(base_path, data_pregao)
-        destino.parent.mkdir(parents=True, exist_ok=True)
+    s3 = _criar_cliente_s3()
 
-        # to_parquet com engine=pyarrow e compression=snappy: padrão da casa.
-        # index=False porque o índice do groupby não tem valor analítico.
+    objetos_escritos = 0
+    for data_pregao, grupo in df.groupby("data", sort=True):
+        chave = _chave_particao(data_pregao)
+        buffer = io.BytesIO()
         grupo.to_parquet(
-            destino,
+            buffer,
             engine="pyarrow",
             compression="snappy",
             index=False,
         )
+        buffer.seek(0)
+
+        try:
+            s3.put_object(
+                Bucket=MINIO_BUCKET,
+                Key=chave,
+                Body=buffer.getvalue(),
+            )
+        except EndpointConnectionError as exc:
+            raise RuntimeError(
+                f"MinIO inacessível em {MINIO_ENDPOINT}. Verifique que o "
+                "serviço está rodando: "
+                "`docker compose -f docker-compose.minio.yml up -d`."
+            ) from exc
+        except ClientError as exc:
+            codigo = exc.response.get("Error", {}).get("Code", "desconhecido")
+            raise RuntimeError(
+                f"Erro do S3 ao gravar s3://{MINIO_BUCKET}/{chave} "
+                f"(código={codigo}): {exc}."
+            ) from exc
+
         logger.info(
-            "Gravado %s (%d linhas).",
-            destino.relative_to(base_path.parent.parent.parent),
+            "Gravado s3://%s/%s (%d linhas).",
+            MINIO_BUCKET,
+            chave,
             len(grupo),
         )
-        arquivos_escritos += 1
+        objetos_escritos += 1
 
-    logger.info("Total de arquivos gravados: %d.", arquivos_escritos)
-    return arquivos_escritos
+    logger.info("Total de objetos gravados no MinIO: %d.", objetos_escritos)
+    return objetos_escritos
 
 
-def _caminho_particao(base_path: Path, data_pregao) -> Path:
-    """Monta o caminho ``base/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet``.
+def _chave_particao(data_pregao: date) -> str:
+    """Monta a chave ``raw/cotacoes/ano=YYYY/mes=MM/dia=DD/cotacoes.parquet``.
 
-    O parâmetro ``data_pregao`` é ``datetime.date`` (vinda do groupby do
-    DataFrame). Usamos ``zfill`` implícito via ``%02d`` para garantir o
-    padding em mês e dia — é o que ferramentas como Hive/Spark/dbt
-    esperam para particionamento estilo Hive.
+    Em S3 não existem pastas — o que existe é uma chave (string opaca).
+    Ferramentas (DuckDB, dbt, Spark) parseiam o estilo Hive
+    (``coluna=valor``) na própria chave para fazer partition pruning.
     """
     return (
-        base_path
-        / f"ano={data_pregao.year:04d}"
-        / f"mes={data_pregao.month:02d}"
-        / f"dia={data_pregao.day:02d}"
-        / "cotacoes.parquet"
+        f"{RAW_PREFIX}/"
+        f"ano={data_pregao.year:04d}/"
+        f"mes={data_pregao.month:02d}/"
+        f"dia={data_pregao.day:02d}/"
+        f"cotacoes.parquet"
     )

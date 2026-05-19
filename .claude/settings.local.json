@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "PowerShell(python -m py_compile ingestion/__init__.py ingestion/config.py ingestion/download.py ingestion/storage.py ingestion/main.py; if \\($?\\) { \"OK: todos os módulos compilam.\" } else { \"FALHA na compilação.\" })",
-      "PowerShell(python -m py_compile ingestion/download.py; if \\($?\\) { \"OK: download.py compila.\" } else { \"FALHA.\" })"
+      "PowerShell(python -m py_compile ingestion/download.py; if \\($?\\) { \"OK: download.py compila.\" } else { \"FALHA.\" })",
+      "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\), str\\(p\\)\\) for p in pathlib.Path\\('ingestion'\\).glob\\('*.py'\\)]; print\\('OK: ingestion compila'\\)\")",
+      "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\), str\\(p\\)\\) for p in pathlib.Path\\('scripts'\\).glob\\('*.py'\\)]; print\\('OK: scripts compila'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/validar_idempotencia.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

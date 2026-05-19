@@ -11,8 +11,13 @@ Três modos:
 - ``range``   — carrega um intervalo arbitrário ``[--inicio, --fim]``.
   Útil para backfill e debug.
 
+Em todos os modos, o destino é o MinIO local (bucket configurado em
+``.env``); não há flag para escolher backend. Pré-requisito de execução:
+``docker compose -f docker-compose.minio.yml up -d``.
+
 Em todos os modos, a ingestão é idempotente: rodar duas vezes produz o
-mesmo conjunto de arquivos no disco.
+mesmo conjunto de objetos no bucket (idempotência semântica — ver
+``docs/decisoes.md``).
 """
 
 import argparse
@@ -20,14 +25,13 @@ import logging
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
-from pathlib import Path
 
-import pandas as pd
 import requests
 
 from ingestion.config import (
     DATA_INICIO_HISTORICO,
-    RAW_PATH,
+    MINIO_BUCKET,
+    RAW_PREFIX,
     TICKERS,
 )
 from ingestion.download import baixar_cotacoes
@@ -129,12 +133,17 @@ def _resolver_intervalo(args: argparse.Namespace) -> IntervaloIngestao:
     )
 
 
-def executar(intervalo: IntervaloIngestao, destino: Path) -> int:
+def executar(intervalo: IntervaloIngestao) -> int:
     """Orquestra download → validação → gravação para o intervalo dado.
+
+    O destino é fixado pela configuração (bucket + prefixo definidos em
+    :mod:`ingestion.config`). Não há flag de CLI para escolhê-lo — a
+    Etapa 2 estabeleceu MinIO como o único backend do raw layer.
 
     Returns:
         Código de saída (0 = sucesso, 1 = falha).
     """
+    destino = f"s3://{MINIO_BUCKET}/{RAW_PREFIX}"
     logger.info(
         "Iniciando ingestão | modo=%s | período=%s → %s | destino=%s",
         intervalo.rotulo_modo,
@@ -150,18 +159,18 @@ def executar(intervalo: IntervaloIngestao, destino: Path) -> int:
         return 1
 
     try:
-        n_arquivos = salvar_particionado(df, destino)
-    except (ValueError, OSError) as exc:
+        n_objetos = salvar_particionado(df)
+    except (ValueError, RuntimeError) as exc:
         logger.error("Falha na gravação: %s", exc, exc_info=True)
         return 1
 
     logger.info(
-        "Resumo | período=%s → %s | tickers=%d | linhas=%d | arquivos=%d",
+        "Resumo | período=%s → %s | tickers=%d | linhas=%d | objetos=%d",
         intervalo.inicio.isoformat(),
         intervalo.fim.isoformat(),
         df["ticker"].nunique() if not df.empty else 0,
         len(df),
-        n_arquivos,
+        n_objetos,
     )
     return 0
 
@@ -172,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     intervalo = _resolver_intervalo(args)
-    return executar(intervalo, RAW_PATH)
+    return executar(intervalo)
 
 
 if __name__ == "__main__":
