@@ -1,0 +1,7 @@
+Get-Content .env | ForEach-Object {
+    if ($_ -match '^\s*([^#][^=]*?)\s*=\s*(.*)$') {
+        $name = $Matches[1].Trim()
+        $value = $Matches[2].Trim()
+        [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    }
+}

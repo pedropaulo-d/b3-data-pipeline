@@ -1,0 +1,52 @@
+# Schema YAML da camada staging.
+#
+# Cobre: descrições (que viram documentação no `dbt docs`) + testes
+# nativos. Testes adicionais de regras de negócio (range, sanidade)
+# ficam em tests/ — aqui só os básicos genéricos.
+
+version: 2
+
+models:
+  - name: stg_cotacoes
+    description: >
+      Staging 1:1 com raw.cotacoes, com apenas uma limpeza: descarta
+      linhas com `fechamento_ajustado IS NULL`. Materializada como
+      view — re-execução é barata e a freshness segue o raw sem
+      `dbt run` adicional.
+    tests:
+      # Chave composta (ticker, data) sem duplicatas. Validação cruzada
+      # com a granularidade declarada do raw: 1 ticker × 1 pregão.
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - ticker
+            - data
+    columns:
+      - name: data
+        description: "Data do pregão (DATE)."
+        tests:
+          - not_null
+      - name: ticker
+        description: "Código de negociação na B3 (ex.: PETR4)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
+      - name: abertura
+        description: "Preço de abertura do pregão (bruto, sem ajuste de proventos ou splits)."
+      - name: maxima
+        description: "Preço máximo do pregão (bruto, sem ajuste)."
+      - name: minima
+        description: "Preço mínimo do pregão (bruto, sem ajuste)."
+      - name: fechamento
+        description: "Preço de fechamento bruto (sem ajuste de proventos ou splits)."
+      - name: fechamento_ajustado
+        description: "Preço de fechamento ajustado por proventos e splits — `Adj Close` do yfinance."
+        tests:
+          - not_null
+      - name: volume
+        description: >
+          Volume de quantidade negociada no pregão — número absoluto
+          de ações negociadas (Int64 nullable). NULL é tolerado
+          (semântica "yfinance não trouxe"); volume < 0 é proibido —
+          coberto pelo custom test `fato_volume_nao_negativo` após o
+          JOIN na fato.

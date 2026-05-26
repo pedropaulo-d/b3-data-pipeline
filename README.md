@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 3 — Warehouse analítico com DuckDB ✅. Próxima: Transformações com dbt.
+**Status atual:** Etapa 4 — Transformações com dbt ✅. Próxima: Orquestração com Airflow.
 
 ---
 
@@ -36,7 +36,7 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
                                        ▼
   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
   │ yfinance │──▶ │  Python  │──▶ │  MinIO   │──▶ │  DuckDB  │──▶ │   dbt    │
-  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │ (WH   ✅) │    │ (models) │
+  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │ (WH   ✅) │    │ (mod. ✅) │
   └──────────┘    └──────────┘    └──────────┘    └──────────┘    └────┬─────┘
                                                                        │
                                                                        ▼
@@ -74,8 +74,8 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 | 1     | Ingestão manual com Python puro     | ✅ Concluída   |
 | 2     | Object storage com MinIO            | ✅ Concluída   |
 | 3     | Warehouse analítico com DuckDB      | ✅ Concluída   |
-| 4     | Transformações com dbt              | 🔜 Próxima     |
-| 5     | Orquestração com Airflow (Docker)   | ⏳ Pendente    |
+| 4     | Transformações com dbt              | ✅ Concluída   |
+| 5     | Orquestração com Airflow (Docker)   | 🔜 Próxima     |
 | 6     | Indicadores e métricas financeiras  | ⏳ Pendente    |
 | 7     | Dashboard com Streamlit             | ⏳ Pendente    |
 | 8     | Polimento, documentação e portfólio | ⏳ Pendente    |
@@ -89,6 +89,14 @@ b3-data-pipeline/
 ├── ingestion/                  # Scripts de download e persistência (Etapa 1+2)
 │   └── README.md
 ├── warehouse/                  # Conexão e setup do DuckDB local (Etapa 3)
+│   └── README.md
+├── dbt/                        # Projeto dbt (Etapa 4)
+│   ├── dbt_project.yml
+│   ├── profiles.yml            # Versionado conscientemente (credenciais via env_var)
+│   ├── packages.yml
+│   ├── seeds/empresas.csv
+│   ├── models/{staging,marts}/
+│   ├── tests/                  # Custom tests (regras de negócio)
 │   └── README.md
 ├── sql/
 │   └── exploratoria/           # Queries .sql versionadas, executadas pelo notebook
@@ -112,7 +120,7 @@ b3-data-pipeline/
 └── requirements.txt
 ```
 
-> Pastas como `dbt/`, `airflow/` e `dashboard/` ainda não existem — cada uma nasce na sua respectiva etapa. O repositório evolui em camadas, não nasce pronto.
+> Pastas como `airflow/` e `dashboard/` ainda não existem — cada uma nasce na sua respectiva etapa. O repositório evolui em camadas, não nasce pronto.
 
 ---
 
@@ -158,6 +166,13 @@ python -m warehouse.setup
 
 # 10. (Opcional) Abrir o notebook exploratório
 jupyter notebook notebooks/exploracao_etapa3.ipynb
+
+# 11. Etapa 4 — rodar o dbt (cria schemas staging/seed/marts no mesmo .duckdb)
+cd dbt
+dbt deps --profiles-dir ./
+dbt build --profiles-dir ./        # seed + run + test em um único comando
+dbt docs generate --profiles-dir ./
+dbt docs serve --profiles-dir ./   # http://localhost:8080
 ```
 
 Para derrubar o MinIO preservando os dados:
@@ -183,6 +198,12 @@ As decisões de arquitetura e seus trade-offs estão documentadas em [`docs/deci
 8. **Bucket único com prefixos por camada** (Etapa 2) — simplicidade; refatoraria se permissões granulares por camada virassem requisito.
 9. **Trocar storage local por S3 direto, sem abstração** (Etapa 2) — YAGNI: raw mora em object storage, ponto; aceito perder execução 100% offline.
 10. **boto3 em vez de s3fs/pyarrow.fs** (Etapa 2) — cliente oficial, é o que aparece em vaga; verboso, mas explícito sobre o protocolo S3.
+11. **DuckDB persistente em arquivo na raiz** (Etapa 3) — view `raw.cotacoes` sobrevive entre sessões e é compartilhada com o dbt na Etapa 4; arquivo gitignored, regenerável a partir do MinIO.
+12. **Schema `raw` como view, não tabela** (Etapa 3) — janela lógica sobre o MinIO; novas partições aparecem sem refresh.
+13. **Esquema estrela Kimball** (Etapa 4) — `fato_cotacoes_diarias` + `dim_empresa` + `dim_tempo`; surrogate keys nas dimensões, chave composta na fato.
+14. **SCD tipo 1 em `dim_empresa`** (Etapa 4) — sobrescreve sem histórico; sem snapshot do dbt nesta etapa.
+15. **dim_tempo gera calendário completo** (Etapa 4) — independente da fato, 2020–2030; padrão Kimball que permite relatórios temporais consistentes.
+16. **profiles.yml do dbt versionado no repo** (Etapa 4) — credenciais via `env_var()`, repo continua reproduzível sem etapa "configure seu profile".
 
 ---
 

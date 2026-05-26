@@ -282,17 +282,20 @@ Validação de idempotência contra S3/MinIO usa boto3 get_object, não filesyst
 
 ## Etapa 4 — Transformações com dbt
 
-**Início:** —
+**Início:** 2026-05-25
 **Fim:** —
 
 ### Conceitos
-(em branco até começar)
+(preencher após executar)
 
 ### Dúvidas
-(em branco até começar)
+(preencher após executar)
 
 ### Descobertas
-(em branco até começar)
+(preencher após executar — sugestões para registrar: tempo do
+`dbt build`, surpresas na execução, particularidades do DuckDB com
+dbt, comportamento da macro `generate_schema_name` no nome final
+dos schemas, latência de cold start do httpfs vs warm cache)
 
 ---
 

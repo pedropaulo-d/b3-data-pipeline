@@ -1,0 +1,44 @@
+# Perfil de conexão do dbt.
+#
+# DECISÃO CONSCIENTE: este profiles.yml mora DENTRO do repo (e não em
+# ~/.dbt/profiles.yml como o default do dbt). Razão: projeto de
+# portfólio, queremos que clonar + rodar funcione sem etapa de
+# "configure seu profile". O custo é que toda invocação do dbt
+# precisa de `--profiles-dir ./` (ou DBT_PROFILES_DIR setado).
+#
+# O perfil aponta para o mesmo warehouse.duckdb que o módulo
+# warehouse/ já gerencia. dbt e o setup do warehouse compartilham
+# o arquivo — schemas raw (criado pelo warehouse) e staging/marts/seed
+# (criados pelo dbt) convivem no mesmo .duckdb.
+
+b3_data_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # `path` é relativo ao diretório do profiles.yml (./dbt).
+      # `../warehouse.duckdb` resolve para warehouse.duckdb na raiz.
+      path: '../warehouse.duckdb'
+      threads: 4
+
+      # httpfs habilita s3:// — necessário porque a source raw.cotacoes
+      # é uma view sobre Parquet no MinIO. Sem httpfs carregada, qualquer
+      # `dbt run` que toque stg_cotacoes (e por consequência marts) falha.
+      extensions:
+        - httpfs
+
+      # Configurações do cliente S3 embutido do DuckDB, equivalentes ao
+      # que warehouse/conexao.py faz em Python. O dbt-duckdb roda os
+      # SETs abaixo a cada abertura de conexão.
+      #
+      # ATENÇÃO ao endpoint: o DuckDB espera APENAS "host:porta", sem
+      # esquema. MINIO_ENDPOINT do .env vem como "http://localhost:9000",
+      # que NÃO funciona aqui. Por isso a variável separada
+      # MINIO_ENDPOINT_HOST_PORT — vide .env.example.
+      settings:
+        s3_endpoint: "{{ env_var('MINIO_ENDPOINT_HOST_PORT', 'localhost:9000') }}"
+        s3_access_key_id: "{{ env_var('MINIO_ACCESS_KEY') }}"
+        s3_secret_access_key: "{{ env_var('MINIO_SECRET_KEY') }}"
+        s3_region: "{{ env_var('MINIO_REGION', 'us-east-1') }}"
+        s3_url_style: 'path'
+        s3_use_ssl: false

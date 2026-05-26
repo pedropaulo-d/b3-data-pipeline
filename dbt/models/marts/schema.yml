@@ -1,0 +1,131 @@
+# Schema YAML da camada marts.
+#
+# Marts = esquema estrela final: fato_cotacoes_diarias + dim_empresa
+# + dim_tempo. Testes aqui protegem:
+#   - Integridade referencial (relationships entre fato e dims)
+#   - Unicidade das chaves (PK natural e surrogate)
+#   - Granularidade da fato (unique_combination_of_columns)
+#
+# Testes de regra de negócio (volume não negativo, maxima >= minima,
+# fechamento dentro do range) ficam em tests/ como SQL custom — esses
+# testes seguem a convenção dbt de "falha se a query retorna linha".
+
+version: 2
+
+models:
+  # -------------------------------------------------------------
+  # FATO
+  # -------------------------------------------------------------
+  - name: fato_cotacoes_diarias
+    description: >
+      Fato Kimball — 1 linha por (empresa, pregão). Materializada
+      como table (full refresh a cada `dbt run`). Métricas brutas;
+      cálculos derivados (retorno, indicadores) ficam para a Etapa 6.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - empresa_id
+            - tempo_id
+    columns:
+      - name: empresa_id
+        description: "FK para dim_empresa (surrogate key)."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_empresa')
+              field: empresa_id
+      - name: tempo_id
+        description: "FK para dim_tempo (formato YYYYMMDD)."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_tempo')
+              field: tempo_id
+      - name: abertura
+        description: "Preço de abertura do pregão (bruto, sem ajuste de proventos ou splits)."
+      - name: maxima
+        description: "Preço máximo do pregão (bruto, sem ajuste)."
+      - name: minima
+        description: "Preço mínimo do pregão (bruto, sem ajuste)."
+      - name: fechamento
+        description: "Preço de fechamento bruto (sem ajuste de proventos ou splits)."
+      - name: fechamento_ajustado
+        description: "Preço de fechamento ajustado por proventos e splits — preservado da source."
+        tests:
+          - not_null
+      - name: volume
+        description: >
+          Volume de quantidade negociada no pregão (número absoluto
+          de ações negociadas). NULL permitido — semanticamente
+          representa "desconhecido", não zero (decisão da Etapa 1).
+          Para volume financeiro (R$), calcular em camada de mart
+          adicional como preço × quantidade.
+
+  # -------------------------------------------------------------
+  # DIMENSÕES
+  # -------------------------------------------------------------
+  - name: dim_empresa
+    description: >
+      Dimensão de empresa (1 linha por ticker). SCD tipo 1: mudanças
+      no seed sobrescrevem; sem histórico. Surrogate key empresa_id
+      gerada por ROW_NUMBER ordenando por ticker.
+    columns:
+      - name: empresa_id
+        description: "Surrogate key (INTEGER)."
+        tests:
+          - not_null
+          - unique
+      - name: ticker
+        description: "Código de negociação na B3 (ex.: PETR4). Natural key da dimensão."
+        tests:
+          - not_null
+          - unique
+      - name: nome
+        description: "Nome de pregão (denominação curta da empresa na B3, ex.: 'Petrobras' para PETR4)."
+        tests:
+          - not_null
+      - name: setor
+        description: "Setor B3 (classificação macro)."
+        tests:
+          - not_null
+      - name: subsetor
+        description: "Subsetor B3 (granularidade intermediária)."
+      - name: segmento
+        description: "Segmento B3 (mais granular)."
+
+  - name: dim_tempo
+    description: >
+      Dimensão de tempo — calendário completo gerado (2020-01-01 a
+      2030-12-31), INDEPENDENTE da fato. Inclui finais de semana e
+      feriados; a fato só referencia datas onde houve pregão.
+    columns:
+      - name: tempo_id
+        description: "Surrogate key (INTEGER no formato YYYYMMDD)."
+        tests:
+          - not_null
+          - unique
+      - name: data
+        description: "Data do calendário (DATE). Natural key da dimensão."
+        tests:
+          - not_null
+          - unique
+      - name: ano
+        description: "Ano civil (ex.: 2026)."
+      - name: mes
+        description: "Mês (1 a 12)."
+      - name: dia
+        description: "Dia do mês (1 a 31)."
+      - name: dia_semana
+        description: "Dia da semana: 0 = domingo, 6 = sábado (convenção DuckDB)."
+      - name: trimestre
+        description: "Trimestre (1 a 4)."
+      - name: nome_mes
+        description: "Nome do mês em PT-BR (Janeiro, Fevereiro, ...)."
+      - name: nome_dia_semana
+        description: "Nome do dia em PT-BR (Domingo, Segunda-feira, ...)."
+      - name: eh_fim_semana
+        description: "True se sábado ou domingo."
+      - name: eh_inicio_mes
+        description: "True se dia = 1."
+      - name: eh_fim_mes
+        description: "True se a data é o último dia do mês."

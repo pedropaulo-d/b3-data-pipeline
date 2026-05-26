@@ -1,0 +1,16 @@
+# Dependências externas do projeto dbt.
+#
+# Instalar com:
+#     dbt deps --profiles-dir ./
+#
+# O dbt baixa o código para `dbt_packages/` (gitignored). É equivalente
+# moral a `pip install -r requirements.txt`, mas para macros dbt.
+
+packages:
+  # dbt_utils traz macros amplamente usadas: surrogate keys, testes
+  # genéricos extras (incluindo unique_combination_of_columns, que
+  # cobre chave composta), helpers de data, etc. Aqui consumimos
+  # `unique_combination_of_columns` em stg_cotacoes e
+  # fato_cotacoes_diarias.
+  - package: dbt-labs/dbt_utils
+    version: [">=1.1.0", "<2.0.0"]

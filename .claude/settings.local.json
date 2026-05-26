@@ -6,7 +6,12 @@
       "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\), str\\(p\\)\\) for p in pathlib.Path\\('ingestion'\\).glob\\('*.py'\\)]; print\\('OK: ingestion compila'\\)\")",
       "Bash(python -c \"import ast, pathlib; [ast.parse\\(p.read_text\\(encoding='utf-8'\\), str\\(p\\)\\) for p in pathlib.Path\\('scripts'\\).glob\\('*.py'\\)]; print\\('OK: scripts compila'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/validar_idempotencia.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c \"import pathlib; l=pathlib.Path\\('CLAUDE.md'\\).read_text\\(encoding='utf-8'\\).splitlines\\(\\); print\\(f'Linhas: {len\\(l\\)} \\(limite 200\\)'\\)\")"
+      "Bash(python -c \"import pathlib; l=pathlib.Path\\('CLAUDE.md'\\).read_text\\(encoding='utf-8'\\).splitlines\\(\\); print\\(f'Linhas: {len\\(l\\)} \\(limite 200\\)'\\)\")",
+      "Bash(python *)",
+      "Bash(awk END{print NR} *)",
+      "Bash(awk 'END{print NR}' \"C:/Users/pedro/Documents/Codes/b3-data-pipeline/CLAUDE.md\")",
+      "Bash(awk 'END{print NR}' \"C:/Users/pedro/Documents/Codes/b3-data-pipeline/docs/NOTAS.md\")",
+      "Bash(git *)"
     ]
   }
 }

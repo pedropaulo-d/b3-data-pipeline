@@ -1,0 +1,62 @@
+# Projeto dbt do b3-data-pipeline.
+#
+# Este arquivo é o "manifesto" do projeto: nome, versão, paths das
+# pastas e configurações herdadas por pastas inteiras de models e
+# seeds. O nome `b3_data_pipeline` casa com o nome do perfil em
+# profiles.yml — é por aí que o dbt conecta projeto a credenciais.
+
+name: 'b3_data_pipeline'
+version: '1.0.0'
+config-version: 2
+
+# Aponta para o profile (em profiles.yml) que carrega as credenciais
+# de conexão com o DuckDB. Manter os dois nomes iguais é convenção.
+profile: 'b3_data_pipeline'
+
+# Pastas do projeto. Os defaults do dbt já casam, mas declarar
+# explicitamente serve de documentação inline.
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+# `target/` recebe o manifest, run_results, artifacts; `dbt_packages/`
+# recebe o conteúdo de `dbt deps`. Ambos são regeneráveis e gitignored.
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Configurações herdadas por pasta de models. Cada subpasta em models/
+# materializa em um schema distinto: staging vira views, marts vira
+# tables. Schemas físicos resolvem para `<target_schema>_staging` e
+# `<target_schema>_marts` por padrão do dbt; em DuckDB com schema
+# default `main`, fica `main_staging` e `main_marts` — mas o
+# `generate_schema_name` default ainda usa o nome simples quando o
+# schema-alvo bate com o target schema. Para evitar surpresa,
+# tratamos isso com macros default do dbt — basta que o nome final
+# que aparece no DuckDB seja legível.
+models:
+  b3_data_pipeline:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table
+
+# Seeds carregadas via `dbt seed`. Tipagem explícita evita surpresas
+# (DuckDB inferiria `varchar` em todas mesmo assim, mas declarar é
+# documentação de schema).
+seeds:
+  b3_data_pipeline:
+    +schema: seed
+    empresas:
+      +column_types:
+        ticker: varchar
+        nome: varchar
+        setor: varchar
+        subsetor: varchar
+        segmento: varchar

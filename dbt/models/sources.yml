@@ -1,0 +1,49 @@
+# Declaração das sources do projeto.
+#
+# A source `raw.cotacoes` é a view criada por `python -m warehouse.setup`
+# sobre os Parquet do MinIO. Declará-la como source aqui faz três coisas:
+# 1. Permite usar `{{ source('raw', 'cotacoes') }}` em models, mantendo
+#    a referência rastreável no DAG do dbt.
+# 2. Gera nó no `dbt docs` documentando o ponto de entrada do pipeline.
+# 3. Habilita testes em colunas da source (não fazemos aqui — testes
+#    de qualidade ficam em stg_cotacoes para cima).
+
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Raw layer: cotações brutas da B3 lidas direto do MinIO via
+      `read_parquet` com `hive_partitioning=true`. Esta view é criada
+      por `python -m warehouse.setup` (módulo warehouse/). dbt não
+      cria nem altera essa view — apenas a consome.
+    schema: raw
+    tables:
+      - name: cotacoes
+        description: >
+          Cotações diárias por ticker, particionadas por ano/mes/dia
+          no MinIO (`s3://b3-data/raw/cotacoes/ano=YYYY/mes=MM/dia=DD/...`).
+          Granularidade: 1 linha = 1 ticker × 1 pregão.
+        columns:
+          - name: data
+            description: "Data do pregão (DATE)."
+          - name: ticker
+            description: "Código de negociação na B3 (ex.: PETR4)."
+          - name: abertura
+            description: "Preço de abertura do pregão (bruto, sem ajuste de proventos ou splits)."
+          - name: maxima
+            description: "Preço máximo do pregão (bruto, sem ajuste)."
+          - name: minima
+            description: "Preço mínimo do pregão (bruto, sem ajuste)."
+          - name: fechamento
+            description: "Preço de fechamento bruto (sem ajuste de proventos ou splits)."
+          - name: fechamento_ajustado
+            description: "Preço de fechamento ajustado por proventos e splits — `Adj Close` do yfinance."
+          - name: volume
+            description: >
+              Volume de quantidade negociada no pregão — número
+              absoluto de ações negociadas (Int64 nullable). NULL =
+              "yfinance não trouxe o valor" — diferente de 0 = "houve
+              pregão sem negócios". Volume financeiro (R$) não é
+              entregue pelo yfinance; calcular downstream como
+              preço × quantidade se necessário.

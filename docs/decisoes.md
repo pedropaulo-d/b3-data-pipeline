@@ -241,3 +241,130 @@ Nenhuma dessas variações afeta camadas downstream (DuckDB, dbt, dashboard), po
 - **Sem mágica.** `s3fs` esconde paginação, retries, multipart upload, autenticação, addressing style. Tudo ótimo em produção; tudo problema quando algo falha e você não sabe onde olhar. Para um projeto cujo objetivo é **entender a stack**, ver os parâmetros explícitos é o ponto.
 
 **Trade-off aceito.** O código é **mais verboso** que `df.to_parquet("s3://...")` em uma linha. Aceito porque o código verboso explicita o que está acontecendo no protocolo S3 (signature v4, path-style addressing, content body) — exatamente o conhecimento que o projeto quer construir.
+
+---
+
+## 2026-05-25 — Etapa 4 — Esquema estrela Kimball (fato + 2 dimensões)
+
+**Contexto.** O modelo analítico final pode ser estrutural de três formas principais: (a) **One Big Table** — uma tabela única achatada com tudo desnormalizado (`cotacao_completa` com ticker, nome, setor, ano, mês etc. repetidos em cada linha); (b) **esquema estrela** clássico — uma fato no centro e dimensões em torno; (c) **esquema floco** — dimensões normalizadas em múltiplos níveis (`dim_setor` separada de `dim_empresa`). O dataset é pequeno (~7.500 linhas), então performance não é o critério.
+
+**Decisão.** **Esquema estrela** com três tabelas finais no schema `marts`: `fato_cotacoes_diarias` (medidas), `dim_empresa` (atributos da empresa), `dim_tempo` (atributos da data).
+
+**Racional.**
+- **Padrão Kimball é o vocabulário da indústria.** "Fato e dimensão" é o jargão que cai em entrevista para vaga de engenharia de dados. Modelar dessa forma força a conversa explícita sobre granularidade, surrogate vs natural key, SCD — exatamente o que se quer demonstrar.
+- **OBT mistura concerns.** Em uma tabela achatada, atualizar o setor de uma empresa exige `UPDATE` em todas as linhas históricas dela. Em estrela, atualizar `dim_empresa.setor` propaga via JOIN.
+- **Floco é overkill aqui.** Separar `dim_setor` de `dim_empresa` faria sentido se setor mudasse com frequência ou tivesse atributos próprios. Aqui é metadado estável; estrela é o tamanho certo.
+
+**Trade-off aceito.** Consultas analíticas exigem JOIN entre fato e dims. Em DuckDB com volume pequeno isso é trivial; em escala maior pode justificar materializações desnormalizadas adicionais para BI. Não é o nosso caso agora.
+
+---
+
+## 2026-05-25 — Etapa 4 — Surrogate keys nas dimensões
+
+**Contexto.** Cada dimensão pode usar a natural key (ticker, data) como chave primária, ou ter um **surrogate key** próprio (INTEGER ou hash) com a natural key preservada como atributo. A fato então referencia pelo surrogate.
+
+**Decisão.** **Surrogate key** em ambas as dimensões:
+- `dim_empresa.empresa_id` (INTEGER, via `ROW_NUMBER() OVER (ORDER BY ticker)`).
+- `dim_tempo.tempo_id` (INTEGER no formato `YYYYMMDD`, ex.: `20260525`).
+
+Natural keys (`ticker`, `data`) **preservadas** nas dimensões como atributos.
+
+**Racional.**
+- **Independência da fato vs natural key.** Se a B3 mudar o código de um ticker (ex.: incorporação, fusão), a fato continua referenciando o `empresa_id` antigo sem precisar de UPDATE em massa. A dim atualiza o `ticker` e a história permanece.
+- **Tipos compactos e JOINs eficientes.** INTEGER < VARCHAR para storage e index. Pouco relevante no nosso volume, mas é a convenção padrão.
+- **`tempo_id` legível.** Formato `YYYYMMDD` é eyeball-friendly (`20260525` lê como "25 de maio de 2026"), preserva ordem cronológica numericamente e é estável independente de `ROW_NUMBER`.
+
+**Trade-off aceito.** JOINs extras toda vez que se quer ler ticker ou data via fato — em vez de ler diretamente da fato. Vale o custo pela disciplina de manter modelo desacoplado.
+
+---
+
+## 2026-05-25 — Etapa 4 — SCD tipo 1 em dim_empresa (sem histórico)
+
+**Contexto.** SCD (Slowly Changing Dimension) define como mudanças em atributos da dimensão são tratadas: **tipo 1** sobrescreve (perde histórico), **tipo 2** versiona com `valid_from`/`valid_to` (preserva histórico), **tipo 3** mantém colunas "current" e "previous" lado a lado. O atributo mais mutável em `dim_empresa` é `setor`/`segmento` (reclassificação da B3, raríssima na prática).
+
+**Decisão.** **SCD tipo 1** em `dim_empresa`: rodar `dbt build` reconstrói a tabela do seed, sobrescrevendo qualquer alteração. Sem snapshots, sem `valid_from`.
+
+**Racional.**
+- **Reconsideração consciente.** Inicialmente cogitou-se SCD tipo 2 — soa mais sofisticado em entrevista. Recuou após perceber que **não há mudança real para versionar** no nosso dataset: classificação setorial da B3 não muda nos 5 anos do histórico. Implementar SCD 2 exigiria simular mudança no seed, o que seria teatro, não dado.
+- **Snapshot do dbt resolve quando precisar.** Se um dia tickers começarem a migrar de setor com frequência (ou se adicionarmos uma dim mais volátil), basta criar `snapshots/dim_empresa_snapshot.sql` — o snapshot é a forma idiomática do dbt para SCD 2, não há razão para inventar manualmente.
+- **Granularidade do seed.** O CSV `empresas.csv` é a fonte da verdade da dimensão; SCD 1 = "a dim espelha o seed", sem fingir uma temporalidade que ela não tem.
+
+**Trade-off aceito.** Mudar `setor` de um ticker e rodar `dbt build` reescreve o histórico relacional (todas as cotações daquele ticker passam a "ter sempre sido" do novo setor). Se essa for uma necessidade real, migrar para SCD 2 via snapshot. Hoje não é.
+
+---
+
+## 2026-05-25 — Etapa 4 — Materialização: view em staging, table em marts
+
+**Contexto.** O dbt suporta quatro materializações principais: `view` (re-executa a cada consulta), `table` (full refresh a cada `dbt run`), `incremental` (apenda registros novos), `ephemeral` (inlineada como CTE em consumidores). Cada camada tem padrão diferente.
+
+**Decisão.** `stg_cotacoes` como **view**; `dim_empresa`, `dim_tempo` e `fato_cotacoes_diarias` como **table**. Sem `incremental` nesta etapa.
+
+**Racional.**
+- **Staging como view: freshness automática.** A view re-lê o raw a cada consulta. Quando a ingestão grava uma nova partição no MinIO, a próxima query em `stg_cotacoes` já enxerga — sem `dbt run` adicional. Custo de re-execução é desprezível dado o volume.
+- **Marts como table: performance previsível.** Consultas analíticas (notebook, dashboard futuro) batem nas tabelas materializadas — sem pagar o custo de re-ler MinIO + filtrar + JOIN a cada acesso. Trade-off direto: staging prioriza freshness, marts priorizam latência.
+- **Incremental fora do escopo.** `incremental` faz sentido quando full refresh é caro (centenas de GB, modelo com janela móvel, custo de warehouse por TB). Nada disso se aplica a 7.500 linhas em DuckDB local. Adicioná-lo agora seria over-engineering — e esconderia a oportunidade de exercitar `incremental` de forma genuína em uma etapa futura.
+
+**Trade-off aceito.** Cada `dbt run` reescreve as 3 tabelas de marts (full refresh). Em DuckDB com volume atual: questão de segundos. Quando deixar de ser, migrar fato para `incremental` com `unique_key=(empresa_id, tempo_id)`.
+
+---
+
+## 2026-05-25 — Etapa 4 — Suite de testes: nativos + 3 custom
+
+**Contexto.** A "qualidade de dado" pode ser garantida em três níveis: (a) só testes nativos do dbt (`not_null`, `unique`, `relationships`, `accepted_values`); (b) só custom SQL tests em `tests/`; (c) combinação. dbt_utils adiciona uma quarta camada com testes genéricos parametrizados (ex.: `unique_combination_of_columns`).
+
+**Decisão.** **Combinação dos três**:
+- **Nativos** em `schema.yml`: not_null nas chaves e métricas críticas, unique nas surrogate/natural keys, accepted_values no ticker, relationships fato → dim.
+- **dbt_utils**: `unique_combination_of_columns` para chave composta `(empresa_id, tempo_id)` na fato e `(ticker, data)` no staging.
+- **Custom em `tests/`**: três SQL que codificam **regras de negócio**:
+  - `fato_volume_nao_negativo` — volume < 0 é impossível (NULL é OK).
+  - `fato_maxima_maior_igual_minima` — sanidade de OHLC.
+  - `fato_fechamento_dentro_do_range` — fechamento entre [minima, maxima].
+
+**Racional.**
+- **Cada teste pega uma classe de bug diferente.** `not_null` pega bug de ingestão (campo faltando); `relationships` pega bug de modelagem (FK órfã); custom tests pegam bug de fonte (volume invertido, valores corrompidos). Sem os três níveis, um bug típico passaria silenciosamente.
+- **Documentação executável.** Os testes em `schema.yml` viram parte da doc do `dbt docs` — quem lê o esquema vê não só os campos, mas também as garantias.
+- **`dbt build` falha rápido.** A combinação garante que `dbt build` retorne erro **na primeira incompatibilidade**, antes que dashboards futuros consumam dado corrompido.
+
+**Trade-off aceito.** Tempo de `dbt build` cresce com a suite — mas testes em DuckDB com este volume rodam em segundos. Quando deixar de ser, separar testes "críticos" (executados em CI a cada PR) de testes "exaustivos" (executados em schedule noturno) via tags do dbt.
+
+---
+
+## 2026-05-25 — Etapa 4 — dim_tempo gera calendário completo, não derivada da fato
+
+**Contexto.** A dimensão de tempo pode ser construída de duas formas: (a) **derivada da fato** — `SELECT DISTINCT data FROM fato`, garantindo que toda data em dim existe em fato; (b) **calendário completo gerado** — `GENERATE_SERIES` cobrindo todo o range temporal de interesse, incluindo finais de semana, feriados e datas onde não houve pregão.
+
+**Decisão.** **Calendário completo gerado** com `GENERATE_SERIES(DATE '2020-01-01', DATE '2030-12-31', INTERVAL 1 DAY)`. Cobre 5 anos de histórico real + projeção razoável de 5 anos.
+
+**Racional.**
+- **Padrão Kimball.** dim_tempo é a única dimensão tradicionalmente populada por geração, não por extração. Razão: relatórios temporais (média mensal, dias úteis no trimestre, comparativo YoY) precisam de **continuidade temporal** mesmo quando não há fato — uma série com gaps "mês sem dado" é diferente de "mês com dado zerado".
+- **Independência aumenta reutilização.** Outras fatos futuras (eventos corporativos, indicadores macro, dados de proventos) compartilham a mesma dim_tempo sem precisar re-gerar.
+- **Range folgado é barato.** ~4.000 linhas para cobrir 11 anos é nada — não justifica restringir.
+
+**Trade-off aceito.** `dim_tempo` contém datas sem fato correspondente. INNER JOIN entre fato e dim_tempo descarta essas datas — comportamento esperado quando se quer apenas "datas com pregão". Para relatórios calendário-orientados (ex.: dia da semana com mais pregões em N anos), o LEFT JOIN inverso é o caminho.
+
+---
+
+## 2026-05-25 — Etapa 4 — profiles.yml versionado no repo (não em ~/.dbt/)
+
+**Contexto.** O dbt procura `profiles.yml` em `~/.dbt/profiles.yml` por default. Versionar no repo é não-convencional; o padrão da comunidade é manter o profile fora do código (separar credenciais de configuração).
+
+**Decisão.** Manter `profiles.yml` em `dbt/profiles.yml` (dentro do repo). Comandos rodam com `--profiles-dir ./`.
+
+**Racional.**
+- **Reprodutibilidade do portfólio.** Quem clona o repo precisa ter o pipeline funcionando com `pip install -r requirements.txt` + `cp .env.example .env` + comandos do README. Adicionar uma etapa "crie `~/.dbt/profiles.yml` copiando o template" é fricção que pesa em projeto público.
+- **Não há credencial no arquivo.** O `profiles.yml` consome credenciais via `env_var()`. O arquivo versionado descreve **a forma da conexão** (tipo DuckDB, caminho do arquivo, extensões), não os segredos. Os segredos seguem em `.env` (gitignored).
+- **Pattern legítimo em projetos dbt embarcados em monorepo.** Squads que rodam dbt como módulo de um repo maior costumam versionar `profiles.yml` por exatamente esse motivo.
+
+**Trade-off aceito.** Todo comando precisa de `--profiles-dir ./` ou `DBT_PROFILES_DIR=./`. Documentado no `dbt/README.md` e na seção de comandos do README raiz. Em CI ou produção real, o `profiles.yml` viraria template + injeção de secrets via vault — não muda a estrutura, só a origem das variáveis.
+
+---
+
+## 2026-05-25 — Etapa 4 — Sobrescrita de generate_schema_name para schemas limpos no DuckDB
+
+**Contexto.** Por default, dbt concatena `target.schema` com o `+schema` custom de cada model. No DuckDB, `target.schema = main`, então `+schema: staging` materializa em `main_staging`. Isso polui o namespace e fica estranho ao consultar (`SELECT * FROM main_marts.fato_cotacoes_diarias`).
+
+**Decisão.** Sobrescrever a macro `generate_schema_name` (em `dbt/macros/generate_schema_name.sql`) para usar o custom schema diretamente quando declarado, ignorando o `target.schema`. Sem mudar `dbt_project.yml` — os `+schema: staging`, `+schema: marts`, `+schema: seed` continuam como estão; só a interpretação muda.
+
+**Racional.** Comportamento mais legível e alinhado com convenções de data warehouse profissional (Snowflake/BigQuery não tem esse problema — o "comportamento estranho" é específico do DuckDB ter um schema default obrigatório chamado `main`). Macro é a forma idiomática que o próprio dbt oferece para personalizar essa resolução — não é hack.
+
+**Trade-off aceito.** Em ambiente de desenvolvimento compartilhado (múltiplos devs no mesmo banco), o default do dbt serve como isolamento natural (`alice_marts`, `bob_marts`). Em projeto single-developer local, esse isolamento não tem valor. Quando/se migrar para ambiente compartilhado, reverter a macro.

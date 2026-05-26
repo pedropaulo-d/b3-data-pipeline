@@ -153,12 +153,9 @@ data, idempotência por sobrescrita, volume Int64 nullable.
 b3-data com prefixos por camada, storage.py escreve só no MinIO, boto3
 direto (não s3fs).
 
-**Etapa 3 — Warehouse:**
-- DuckDB persistente em arquivo na raiz (warehouse.duckdb, gitignored)
-- Schema `raw` como view sobre read_parquet do MinIO (não materializado)
-- httpfs como extensão que conecta DuckDB ↔ MinIO via HTTP
-- SQL exploratório em arquivos versionados (sql/exploratoria/) + notebook narrativo (notebooks/exploracao_etapa3.ipynb)
-- warehouse/conexao.py importa credenciais de ingestion.config (não duplica)
+**Etapa 3 — Warehouse:** DuckDB persistente em `warehouse.duckdb` (raiz, gitignored), schema `raw` como view sobre `read_parquet` do MinIO via httpfs, SQL exploratório em `sql/exploratoria/` + notebook narrativo, `warehouse/conexao.py` reusa credenciais de `ingestion.config`.
+
+**Etapa 4 — dbt:** estrela Kimball em `marts` (`fato_cotacoes_diarias` + `dim_empresa` + `dim_tempo`); surrogate keys nas dims, chave composta na fato; SCD 1 em `dim_empresa`; staging = view, marts = table; seed `empresas.csv`; testes nativos + 3 custom (volume, max≥min, fechamento no range); `dbt/profiles.yml` versionado (credenciais via `env_var`); `dim_tempo` gera calendário 2020–2030 independente da fato.
 
 ### Convenções de validação
 
@@ -172,6 +169,7 @@ b3-data-pipeline/
 ├── ingestion/              # Pipeline de ingestão (Etapa 1+)
 ├── scripts/                # Utilitários de validação e operação
 ├── warehouse/              # Conexão e setup do DuckDB (Etapa 3+)
+├── dbt/                    # Projeto dbt (Etapa 4); profiles.yml versionado
 ├── sql/exploratoria/       # SQL exploratório versionado
 ├── notebooks/              # Exploração e narrativa
 ├── data/raw/               # HISTÓRICO da Etapa 1; raw vive no MinIO
@@ -183,7 +181,7 @@ b3-data-pipeline/
 └── requirements.txt
 ```
 
-Pastas futuras: `dbt/` (Etapa 4), `airflow/` (Etapa 5), `dashboard/` (Etapa 7).
+Pastas futuras: `airflow/` (Etapa 5), `dashboard/` (Etapa 7).
 
 ---
 

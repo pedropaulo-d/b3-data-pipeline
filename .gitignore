@@ -72,8 +72,11 @@ logs/
 # ============================================================
 # dbt (Etapa 4)
 # ============================================================
-target/
-dbt_packages/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+# Não ignorar dbt/profiles.yml: decisão consciente de versionar
+# (consome credenciais via env_var, sem segredos no arquivo).
 
 # ============================================================
 # Airflow (Etapa 5)
