@@ -85,3 +85,18 @@ airflow.db
 airflow.cfg
 webserver_config.py
 airflow-webserver.pid
+
+# Logs e plugins do Airflow são bind-mounts ativos: o conteúdo é
+# gerado em runtime e não vai para o repo. Dois cuidados aqui:
+#   1) Padrão `dir/*` (não `dir/`) — com `dir/` git nem entra na pasta
+#      e a negação `!dir/.gitkeep` não tem efeito.
+#   2) A regra geral `logs/` na seção "Logs" deste arquivo casaria com
+#      airflow/logs e bloquearia o `airflow/logs/.gitkeep` mesmo com
+#      a negação aqui embaixo. Por isso negamos a pasta inteira ANTES,
+#      depois ignoramos seu conteúdo.
+!airflow/logs/
+!airflow/plugins/
+airflow/logs/*
+airflow/plugins/*
+!airflow/logs/.gitkeep
+!airflow/plugins/.gitkeep
