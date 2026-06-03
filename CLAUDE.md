@@ -138,7 +138,7 @@ a escolha do usuário antes de codar**.
 - **Object storage:** MinIO via Docker Compose
 - **Warehouse:** DuckDB (Etapa 3)
 - **Transformação:** dbt-duckdb (Etapa 4)
-- **Orquestração:** Apache Airflow via Docker Compose (Etapa 5)
+- **Orquestração:** Apache Airflow 2.10 via Docker Compose, LocalExecutor + Postgres metastore (Etapa 5)
 - **Dashboard:** Streamlit (Etapa 7)
 - **Ambiente:** local, single-host
 
@@ -146,16 +146,15 @@ a escolha do usuário antes de codar**.
 
 Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a menos que o usuário peça explicitamente:
 
-**Etapa 1 — Ingestão:** preço bruto+ajustado, 1 arquivo Parquet por
-data, idempotência por sobrescrita, volume Int64 nullable.
+**Etapa 1 — Ingestão:** preço bruto+ajustado, 1 arquivo Parquet por data, idempotência por sobrescrita, volume Int64 nullable.
 
-**Etapa 2 — Object storage:** MinIO em Compose dedicado, bucket único
-b3-data com prefixos por camada, storage.py escreve só no MinIO, boto3
-direto (não s3fs).
+**Etapa 2 — Object storage:** MinIO em Compose dedicado, bucket único b3-data com prefixos por camada, storage.py escreve só no MinIO, boto3 direto (não s3fs).
 
 **Etapa 3 — Warehouse:** DuckDB persistente em `warehouse.duckdb` (raiz, gitignored), schema `raw` como view sobre `read_parquet` do MinIO via httpfs, SQL exploratório em `sql/exploratoria/` + notebook narrativo, `warehouse/conexao.py` reusa credenciais de `ingestion.config`.
 
 **Etapa 4 — dbt:** estrela Kimball em `marts` (`fato_cotacoes_diarias` + `dim_empresa` + `dim_tempo`); surrogate keys nas dims, chave composta na fato; SCD 1 em `dim_empresa`; staging = view, marts = table; seed `empresas.csv`; testes nativos + 3 custom (volume, max≥min, fechamento no range); `dbt/profiles.yml` versionado (credenciais via `env_var`); `dim_tempo` gera calendário 2020–2030 independente da fato.
+
+**Etapa 5 — Airflow:** compose único `docker-compose.yml` (renomeado de `docker-compose.minio.yml`); imagem custom `airflow/Dockerfile` (apache/airflow:2.10.5 + `requirements.txt`); DAG `pipeline_b3_diario` com 4 BashOperator (`extract_cotacoes` → `refresh_warehouse` → `dbt_run` → `dbt_test`); schedule `0 20 * * *` em `America/Sao_Paulo`, `catchup=False`, `retries=2` (5min); projeto bind-montado em `/opt/project`; dentro do container `MINIO_ENDPOINT=http://minio:9000` (host segue com `localhost:9000`).
 
 ### Convenções de validação
 
@@ -174,14 +173,15 @@ b3-data-pipeline/
 ├── notebooks/              # Exploração e narrativa
 ├── data/raw/               # HISTÓRICO da Etapa 1; raw vive no MinIO
 ├── docs/                   # decisoes.md, NOTAS.md
-├── docker-compose.minio.yml
+├── airflow/                # Dockerfile, dags/, logs/, plugins/ (Etapa 5)
+├── docker-compose.yml      # MinIO (Etapa 2) + Airflow (Etapa 5)
 ├── .env.example            # Versionado
 ├── .env                    # Gitignored
 ├── warehouse.duckdb        # Gitignored, regenerável via warehouse.setup
 └── requirements.txt
 ```
 
-Pastas futuras: `airflow/` (Etapa 5), `dashboard/` (Etapa 7).
+Pasta futura: `dashboard/` (Etapa 7).
 
 ---
 

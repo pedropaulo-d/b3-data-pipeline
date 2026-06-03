@@ -301,17 +301,99 @@ dos schemas, latência de cold start do httpfs vs warm cache)
 
 ## Etapa 5 — Orquestração com Airflow
 
-**Início:** —
+**Início:** 2026-06-03
 **Fim:** —
 
-### Conceitos
-(em branco até começar)
+### Conceitos a estudar nesta etapa
+
+- **DAG (Directed Acyclic Graph).** Estrutura que descreve um pipeline:
+  vértices são tasks, arestas são dependências. Sem ciclos — uma task
+  não pode depender (direta ou indiretamente) de si mesma. No Airflow,
+  uma DAG é um arquivo Python que **declara** o grafo (não executa);
+  o scheduler interpreta e dispara as runs.
+
+- **Operator e task.** *Operator* é o template ("o que fazer" —
+  BashOperator roda shell, PythonOperator roda função, etc.).
+  *Task* é a instância do operator dentro de uma DAG (com `task_id`,
+  parâmetros e posição no grafo). Cada operator tem um contrato: rodar
+  até o fim ou falhar; o Airflow registra o resultado.
+
+- **Scheduler vs worker vs webserver.** Três processos do Airflow,
+  com responsabilidades distintas:
+  - **scheduler** decide *quando* uma task deve rodar (checa cron,
+    dependências, retries) e cria *task instances* no banco;
+  - **worker** *executa* as task instances (LocalExecutor: workers são
+    subprocessos do scheduler; CeleryExecutor: workers em containers
+    separados consumindo fila);
+  - **webserver** expõe a UI HTTP — não toca em execução, só lê do
+    banco e exibe.
+
+- **Executor.** Camada de abstração que decide *onde* o worker roda.
+  `SequentialExecutor` (single thread, dev), `LocalExecutor`
+  (subprocessos no mesmo host), `CeleryExecutor` (fila + workers
+  remotos), `KubernetesExecutor` (pod por task). Nossa escolha:
+  LocalExecutor — projeto single-host, sem necessidade de escala
+  horizontal.
+
+- **`execution_date` vs `logical_date` (Airflow 2.x).** O Airflow
+  agenda runs por *janela*: uma run agendada para `2026-06-03 20:00`
+  representa o **dia útil 2026-06-03**. A data lógica daquele run é
+  `2026-06-03 20:00` (em Airflow 1.x chamava-se `execution_date`; em
+  2.2+ foi renomeada para `logical_date`). Confusão clássica: o run
+  "do dia 03" só dispara **depois** das 20h do dia 03, mas a
+  `logical_date` é o INÍCIO da janela, não o momento físico do
+  disparo. Em pipelines com janela diária, `logical_date` é a chave
+  para idempotência: "rodei o pipeline para a janela X" é diferente
+  de "rodei o pipeline hoje".
+
+- **`start_date` + `catchup`.** `start_date` é a primeira data lógica
+  válida da DAG. Com `catchup=True`, ao despausar uma DAG, o
+  scheduler dispara todos os runs perdidos entre `start_date` e
+  agora (backfill automático). Com `catchup=False`, ele pula direto
+  para o próximo horário-alvo após o despausar. Nossa escolha:
+  catchup=False — a fonte (yfinance) não muda valor histórico
+  retroativamente; reprocessar passado seria trabalho duplicado sem
+  efeito.
+
+- **Retry e retry_delay.** `retries=N` permite N tentativas adicionais
+  após a primeira falha (total: N+1 execuções). `retry_delay` define
+  o intervalo entre tentativas. Sem backoff exponencial (parâmetro
+  separado `retry_exponential_backoff`). Cobertura típica:
+  - falha de rede (yfinance, MinIO) — retry resolve;
+  - bug no código — retry não resolve, vai falhar 3 vezes seguidas.
+  Distinguir cedo: se uma task SEMPRE falha em todas as N+1
+  tentativas, é bug, não transiente.
+
+- **BashOperator e bind mount.** BashOperator roda `bash -c "comando"`
+  dentro do container do worker. Bind mount monta um diretório do
+  host (ou de outro lugar) DENTRO do container — mudanças no host
+  aparecem instantaneamente no container e vice-versa. Combinação
+  usada aqui: o projeto inteiro (`.`) é bind-montado em
+  `/opt/project`, e cada BashOperator faz `cd /opt/project && ...`.
+
+- **`x-` extension fields no Compose.** Yaml permite chaves
+  arbitrárias se começarem com `x-`. O Compose usa esse mecanismo
+  para definir "anchors" reutilizáveis (`x-airflow-common`) que vários
+  serviços referenciam via `<<: *anchor`. Reduz duplicação sem
+  inventar uma nova feature do Compose — é puramente YAML.
+
+- **`depends_on` com `condition`.** Sem `condition`, o Compose só
+  garante que o container dependente *iniciou* (mesmo que esteja em
+  loop de falha). Com `condition: service_healthy`, espera o
+  healthcheck passar; com `condition: service_completed_successfully`,
+  espera o container sair com exit 0 (padrão para init containers).
+  Crítico para o `airflow-init`: webserver e scheduler só sobem
+  depois que migrate + create user terminou.
 
 ### Dúvidas
-(em branco até começar)
+(preencher após executar)
 
 ### Descobertas
-(em branco até começar)
+(preencher após executar — sugestões para registrar: diferença
+prática entre `localhost:9000` no host e `minio:9000` no container,
+tempo de build da imagem custom, tempo do primeiro `airflow db
+migrate`, comportamento real do `logical_date` na primeira execução
+manual disparada via UI, retry observado em falha simulada)
 
 ---
 

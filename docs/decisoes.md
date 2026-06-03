@@ -368,3 +368,96 @@ Natural keys (`ticker`, `data`) **preservadas** nas dimensões como atributos.
 **Racional.** Comportamento mais legível e alinhado com convenções de data warehouse profissional (Snowflake/BigQuery não tem esse problema — o "comportamento estranho" é específico do DuckDB ter um schema default obrigatório chamado `main`). Macro é a forma idiomática que o próprio dbt oferece para personalizar essa resolução — não é hack.
 
 **Trade-off aceito.** Em ambiente de desenvolvimento compartilhado (múltiplos devs no mesmo banco), o default do dbt serve como isolamento natural (`alice_marts`, `bob_marts`). Em projeto single-developer local, esse isolamento não tem valor. Quando/se migrar para ambiente compartilhado, reverter a macro.
+
+---
+
+## 2026-06-03 — Etapa 5 — Airflow no mesmo Compose do MinIO (renomeado para docker-compose.yml)
+
+**Contexto.** A Etapa 5 introduz Airflow. Há duas formas de organizar a infra: (a) um segundo arquivo Compose dedicado (`docker-compose.airflow.yml`), subido em paralelo ao do MinIO via flag `--profile` ou `-f`; (b) um único `docker-compose.yml` na raiz contendo MinIO + Airflow, carregado por padrão sem `-f`.
+
+**Decisão.** **Compose único.** Renomear `docker-compose.minio.yml` → `docker-compose.yml` (`git mv`, preservando histórico) e adicionar serviços `postgres`, `airflow-init`, `airflow-webserver`, `airflow-scheduler` ao mesmo arquivo. A subida vira `docker compose up -d` (sem `-f`).
+
+**Racional.**
+- **Mesma rede Docker é requisito funcional.** A DAG precisa resolver `minio:9000` pelo DNS interno do Compose. Arquivos separados criariam redes separadas — exigiria network externa nomeada, mais complexidade que o ganho.
+- **Comando canônico.** `docker compose up -d` é o que aparece em tutorial, doc e CI. Esconder a infra atrás de `-f` é fricção sem benefício.
+- **A Etapa 2 já previu este momento.** A decisão "Compose dedicado na raiz" registrada em 2026-05-18 explicitamente apontou que Etapa 5 estenderia o mesmo arquivo — não é mudança de plano, é o plano se concretizando.
+
+**Trade-off aceito.** Quem só quer subir o MinIO (ex.: rodar ingestão sem Airflow) passa a subir Postgres + Airflow junto, ou usa `docker compose up -d minio mc-init`. Aceitável: o caso normal é "subir tudo".
+
+---
+
+## 2026-06-03 — Etapa 5 — LocalExecutor em vez de CeleryExecutor
+
+**Contexto.** Airflow oferece quatro executors principais: `SequentialExecutor` (default, single-task, sem paralelismo — apenas para desenvolvimento), `LocalExecutor` (multi-process no mesmo host, paralelismo dentro da máquina), `CeleryExecutor` (workers separados via fila Redis/RabbitMQ, escala horizontal), `KubernetesExecutor` (pod por task).
+
+**Decisão.** **LocalExecutor**. Scheduler e workers no mesmo container, sem Redis, sem worker dedicado.
+
+**Racional.**
+- **Single-host por design.** O projeto inteiro roda em uma máquina. Escala horizontal não está no escopo (decisão "ambiente local" da Etapa 0).
+- **Volume desprezível.** 4 tasks/dia × poucos minutos cada. CeleryExecutor seria 3 containers extras (worker, Redis, flower) para zero ganho.
+- **Curva de aprendizado proporcional.** Configurar Celery + broker para um portfólio é overhead de explicação sem payoff em entrevista — qualquer recrutador entende que "subiria para Celery quando o volume exigir".
+
+**Trade-off aceito.** Quando alguém perguntar "como você escalaria isso?", a resposta é narrativa, não demonstração. Mitigação: documentar a transição no `airflow/README.md` ("limites desta etapa") e estar pronto para discutir em entrevista.
+
+---
+
+## 2026-06-03 — Etapa 5 — Bind mount + BashOperator (não PythonOperator nem DockerOperator)
+
+**Contexto.** A DAG precisa rodar os mesmos comandos que o usuário hoje roda no terminal (`python -m ingestion.main`, `python -m warehouse.setup`, `dbt run/test`). Três opções: (a) **PythonOperator** que importa as funções do projeto e chama direto; (b) **DockerOperator** que dispara um container novo por task com a imagem do projeto; (c) **BashOperator** que executa o comando shell exato, com o projeto bind-montado dentro dos containers do Airflow.
+
+**Decisão.** **Bind mount + BashOperator.** A raiz do projeto (`.`) é montada em `/opt/project` nos 3 serviços do Airflow. Cada task é um `BashOperator` rodando o comando do terminal sem modificação.
+
+**Racional.**
+- **Paridade exata com a execução manual.** A DAG faz LITERALMENTE o que o usuário fazia à mão na Etapa 4. Zero divergência entre "como reproduzo localmente" e "como o Airflow faz". Em entrevista, "o operador roda o mesmo comando do README" é defesa cristalina.
+- **PythonOperator acopla a DAG ao código.** Mudar a assinatura de uma função em `ingestion/` quebraria a DAG. BashOperator depende só do CLI, que é a interface estável já documentada.
+- **DockerOperator exigiria docker-in-docker** (ou docker socket exposto), com uma imagem do projeto separada. Para single-host single-developer, é complexidade sem ganho.
+- **Idempotência herdada.** Cada comando já é idempotente (decisões da Etapa 1 e 4). Airflow não precisa adicionar nada.
+
+**Trade-off aceito.** A imagem custom do Airflow precisa instalar TODAS as deps do projeto (yfinance, duckdb, dbt etc.) — imagem maior (~1.5GB), build mais lento. Aceitável porque é build local single-time; alternativa multi-container seria mais código, mais variáveis para alinhar, mais lugares para errar.
+
+---
+
+## 2026-06-03 — Etapa 5 — DAG monolítica de 4 tasks por etapa lógica
+
+**Contexto.** O pipeline tem ingestão, refresh de warehouse e duas fases do dbt (run + test). Granularidades possíveis: (a) **uma única task** rodando um shell script com tudo; (b) **uma task por modelo dbt** (40+ tasks via `dbt-airflow` ou parsing de manifest.json); (c) **uma task por etapa lógica** (4 tasks na DAG).
+
+**Decisão.** **4 tasks**, uma por etapa lógica do pipeline: `extract_cotacoes`, `refresh_warehouse`, `dbt_run`, `dbt_test`.
+
+**Racional.**
+- **Retry granular onde importa.** Se o yfinance falhar (rede), só `extract_cotacoes` reexecuta; `dbt_run` que rodou ok não precisa repetir. Se um teste falhar, `dbt_test` reexecuta isolado depois do fix.
+- **Visibilidade no grid.** 4 quadradinhos verdes/vermelhos contam a história do dia em um olhar. Uma task única perderia a localização de falha; 40 tasks viraria ruído.
+- **dbt run + dbt test separados, não `dbt build`.** Permite ver o que falhou — modelagem ou qualidade de dados — sem inspecionar log. Em incidente real, essa distinção é a diferença entre "rollback do modelo" e "investigar fonte".
+- **`dbt_test` como gate de qualidade.** Falha em test bloqueia DAGs futuras (catchup=False, mas próximo run vê o estado anterior). É o comportamento desejado: dado ruim não progride.
+
+**Trade-off aceito.** Não exercitamos **`dbt-airflow`** ou parsing de `manifest.json` para uma task por modelo — padrão em data orgs maduras. Aceitável: nosso DAG tem 4 modelos, expandir agora seria teatro. Quando o projeto crescer e o número de modelos justificar a granularidade, refatorar com `Cosmos` ou similar.
+
+---
+
+## 2026-06-03 — Etapa 5 — Schedule 20h America/Sao_Paulo, catchup=False
+
+**Contexto.** Definir quando a DAG roda e como tratar gaps históricos (datas em que a DAG estava pausada ou inexistente).
+
+**Decisão.** Cron `0 20 * * *` no fuso `America/Sao_Paulo`. `catchup=False`. `start_date` fixo em `2026-01-01` (data passada arbitrária; com catchup off, serve só como referência).
+
+**Racional.**
+- **20h Brasília = pós-fechamento + ajustes do dia disponíveis.** Pregão fecha 18h (com after-market até 18h30). 20h dá folga para o provedor (Yahoo/yfinance) calcular o ajustado por proventos do dia. Antes disso, risco de pegar dado parcial.
+- **Fuso explícito evita armadilha UTC.** Airflow trata datas internamente em UTC, mas o cron lê do `timezone` da DAG. Sem `tz="America/Sao_Paulo"`, "20h" viraria 17h Brasília (UTC-3) — duas horas antes do fechamento, dado pode não estar pronto.
+- **catchup=False alinha com a natureza do dado.** Se a DAG ficou pausada por uma semana, fazer 7 backfills agora não conserta nada — o yfinance entregaria os mesmos valores que já entregaria amanhã. Quando precisar reprocessar histórico, é manual e consciente (CLI: `python -m ingestion.main --modo range --inicio ... --fim ...`).
+- **start_date no passado fixo.** Convenção do Airflow para escapar do "start_date dinâmico = comportamento confuso". Com catchup=False, a data não causa retroatividade; só serve para o scheduler saber a primeira janela válida.
+
+**Trade-off aceito.** Não exercitamos backfill orquestrado. Em vaga real, backfill costuma ser feature importante. Mitigação: a CLI `--modo range` cobre o caso; documentar em README como rodar manualmente, e mencionar em entrevista que a escolha é consciente, não desconhecimento.
+
+---
+
+## 2026-06-03 — Etapa 5 — Endpoint MinIO: minio:9000 no container, localhost:9000 no host
+
+**Contexto.** O código (`ingestion/config.py`, `warehouse/conexao.py`, `dbt/profiles.yml`) lê `MINIO_ENDPOINT` (e `MINIO_ENDPOINT_HOST_PORT`) de variável de ambiente. Funciona com `http://localhost:9000` quando executado no host, mas falha dentro de container Compose — `localhost` em um container Docker é o próprio container, não o MinIO. Dentro da rede Compose, o serviço `minio` é resolvido por DNS interno: `http://minio:9000`.
+
+**Decisão.** **Duas fontes diferentes do valor.** `.env` no host mantém `localhost:9000` (uso manual via terminal). No `docker-compose.yml`, bloco `x-airflow-common.environment` sobrescreve **explicitamente** `MINIO_ENDPOINT=http://minio:9000` e `MINIO_ENDPOINT_HOST_PORT=minio:9000` para os 3 serviços do Airflow. `python-dotenv` (`override=False` por default) preserva o valor injetado pelo Compose mesmo quando lê o `.env` bind-mountado.
+
+**Racional.**
+- **Sem mexer no código.** As variáveis já são lidas de `os.environ`. Quem injetar o valor certo no ambiente certo resolve o problema.
+- **Cada contexto fica com a string que funciona naquele contexto.** Não há "string mágica universal" — `minio:9000` não existe no DNS do host (a menos que o usuário edite `/etc/hosts`), `localhost:9000` não existe no DNS do container. Tentar unificar geraria ginástica desnecessária.
+- **`override=False` é exatamente o desired behavior.** Variáveis injetadas pelo orquestrador (Compose) vencem variáveis vindas de arquivo (`.env`). Esse é o padrão em qualquer stack de produção: secrets de vault > config file local.
+
+**Trade-off aceito.** Documentar a diferença em três lugares (`.env.example`, `airflow/README.md`, `docs/decisoes.md`). É a fonte mais comum de "funciona na minha máquina mas falha no container" — o custo do documento é menor que o custo de redescobrir.
