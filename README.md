@@ -113,8 +113,11 @@ b3-data-pipeline/
 │   ├── logs/                   # Gitignored, bind mount em runtime
 │   ├── plugins/                # Gitignored, bind mount em runtime
 │   └── README.md
+├── .github/
+│   └── workflows/security.yml  # CI de segurança: pip-audit + gitleaks (M6)
 ├── docs/
 │   ├── decisoes.md             # Decisões técnicas com racional
+│   ├── divida_tecnica.md       # Dívida técnica consciente, por etapa
 │   └── NOTAS.md                # Caderno de aprendizados por etapa
 ├── docker-compose.yml          # MinIO (Etapa 2) + Airflow (Etapa 5)
 ├── warehouse.duckdb            # Arquivo do warehouse local (gitignored, regenerável)
@@ -123,7 +126,9 @@ b3-data-pipeline/
 ├── .gitignore
 ├── README.md
 ├── CLAUDE.md                   # Diretrizes para sessões com Claude Code
-└── requirements.txt
+├── requirements.txt            # Deps diretas (intenção, >=; usado no build do Airflow)
+├── requirements.lock           # Deps pinadas do HOST (==; referência, não usado no Airflow)
+└── requirements-dev.txt        # Ferramentas de dev/segurança (pip-audit)
 ```
 
 > A pasta `dashboard/` ainda não existe — nasce na Etapa 7. O repositório evolui em camadas, não nasce pronto.
@@ -197,6 +202,53 @@ Para derrubar todos os serviços preservando os dados:
 docker compose down       # remove containers, mantém volumes (raw + metastore)
 docker compose down -v    # remove TAMBÉM volumes (apaga raw e metastore do Airflow)
 ```
+
+---
+
+## Dependências e CI de segurança
+
+Três arquivos de dependências, com papéis distintos:
+
+| Arquivo                 | Papel       | Versões | Quem consome |
+|-------------------------|-------------|---------|--------------|
+| `requirements.txt`      | **intenção** | `>=`   | Build da imagem do Airflow (pip resolve contra as constraints da imagem oficial) |
+| `requirements.lock`     | **estado (host)** | `==` | Referência das versões testadas no ambiente HOST (venv local) |
+| `requirements-dev.txt`  | dev/segurança | `>=`  | Auditoria local e CI (`pip-audit`) |
+
+`requirements.txt` declara o que o projeto **quer** (deps diretas, com
+`>=`, legível) e é o arquivo usado no `docker build` da imagem do Airflow:
+o `pip` resolve as versões respeitando as constraints da imagem base
+`apache/airflow:2.10.5`.
+
+`requirements.lock` congela o que o projeto **tem** no ambiente **HOST**
+(todas as deps, transitivas inclusas, com `==`), onde ingestão, warehouse
+e dbt rodam fora do Docker (venv local). **Ele NÃO é usado no build da
+imagem do Airflow**: pinar versões `==` geradas num venv standalone
+conflita com as constraints que a imagem oficial fixa, e o `pip install`
+quebra (ver [`docs/divida_tecnica.md`](docs/divida_tecnica.md), DT-SEC.1).
+Regenerar o lock após mudar deps:
+
+```bash
+python -m venv .venv && .venv\Scripts\Activate.ps1   # Windows
+pip install -r requirements.txt
+pip freeze > requirements.lock
+```
+
+**CI de segurança** (diferencial de portfólio): o repositório roda
+[`.github/workflows/security.yml`](.github/workflows/security.yml) em todo
+push para `main` e em todo pull request. Dois controles:
+
+- **`pip-audit`** — procura CVEs conhecidos nas dependências Python
+  (audita o `requirements.lock`). Falha o build em qualquer CVE.
+- **`gitleaks`** — procura secrets vazados no histórico do Git. Falha o
+  build se encontrar.
+
+Localmente: `pip install -r requirements-dev.txt && pip-audit -r requirements.lock`.
+`gitleaks` e `trufflehog` são binários (não pip) — ver `requirements-dev.txt`
+para instalação via Docker ou gerenciador de pacotes.
+
+A dívida técnica consciente do projeto fica registrada em
+[`docs/divida_tecnica.md`](docs/divida_tecnica.md).
 
 ---
 

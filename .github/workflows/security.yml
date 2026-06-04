@@ -1,0 +1,70 @@
+# ============================================================
+# CI de segurança (M6)
+# ============================================================
+# Dois controles, simples e auditáveis (este projeto é portfólio — a
+# ideia é que um recrutador leia e entenda em 30 segundos):
+#
+#   1) pip-audit  -> procura CVEs conhecidos nas dependências Python.
+#   2) gitleaks   -> procura secrets (chaves, senhas) vazados no histórico.
+#
+# Qualquer um dos dois falha o build se encontrar problema.
+
+name: security
+
+# Roda em todo push para main e em todo pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Permissões mínimas: só leitura do conteúdo do repo.
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------
+  # 1) Auditoria de CVEs nas dependências Python
+  # ----------------------------------------------------------
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar pip-audit
+        run: pip install -r requirements-dev.txt
+
+      # Audita o lock (estado pinado real). Se o lock ainda não existir,
+      # cai para o requirements.txt. pip-audit sai com código != 0 — e
+      # portanto FALHA o job — quando encontra qualquer CVE conhecido.
+      - name: Rodar pip-audit
+        run: |
+          if [ -f requirements.lock ]; then
+            pip-audit -r requirements.lock
+          else
+            pip-audit -r requirements.txt
+          fi
+
+  # ----------------------------------------------------------
+  # 2) Varredura de secrets no histórico do Git
+  # ----------------------------------------------------------
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 traz o histórico completo — gitleaks varre
+          # todos os commits, não só o último.
+          fetch-depth: 0
+
+      # Action oficial do gitleaks. Falha o job se encontrar secret.
+      - name: Rodar gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

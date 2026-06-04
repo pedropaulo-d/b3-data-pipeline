@@ -15,6 +15,14 @@ FROM apache/airflow:2.10.5
 # de build do compose é a raiz do repositório (definida em
 # docker-compose.yml -> build.context), então requirements.txt está
 # acessível pelo path relativo.
+#
+# M5 (fallback aplicado — DT-SEC.1): usamos requirements.txt (>=), NÃO o
+# requirements.lock (==). Pinar o lock — gerado num venv standalone
+# Python 3.13, sem as constraints da imagem oficial — conflita com as
+# versões que o apache/airflow:2.10.5 fixa, e o `pip install` quebra. Com
+# o requirements.txt, o pip resolve as deps contra as constraints da
+# imagem base. O lock segue no repo como referência do ambiente HOST
+# (ingestão/warehouse/dbt fora do Docker), só não entra neste build.
 COPY requirements.txt /requirements.txt
 
 # Instala as deps como usuário `airflow` (o root do container é

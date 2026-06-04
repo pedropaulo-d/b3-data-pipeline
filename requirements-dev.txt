@@ -1,0 +1,26 @@
+# ============================================================
+# Dependências de DESENVOLVIMENTO / segurança (M6)
+# ============================================================
+# Não vão para a imagem do Airflow nem para o runtime do pipeline.
+# Instale num venv local quando for auditar o projeto:
+#   pip install -r requirements-dev.txt
+#
+# Auditoria de CVEs nas dependências Python. Roda no CI
+# (.github/workflows/security.yml) e localmente:
+#   pip-audit -r requirements.lock
+pip-audit>=2.7.0
+
+# ------------------------------------------------------------
+# NÃO instaláveis via pip (são binários) — varredura de secrets:
+#
+#   gitleaks    -> https://github.com/gitleaks/gitleaks
+#                  Windows:  scoop install gitleaks  (ou baixar release)
+#                  Docker:   docker run --rm -v "${PWD}:/repo" \
+#                              zricethezav/gitleaks:latest detect --source=/repo
+#
+#   trufflehog  -> https://github.com/trufflesecurity/trufflehog
+#                  Docker:   docker run --rm -v "${PWD}:/repo" \
+#                              trufflesecurity/trufflehog:latest git file:///repo
+#
+# O CI usa a action oficial do gitleaks; localmente o Docker basta.
+# ------------------------------------------------------------
