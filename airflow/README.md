@@ -67,7 +67,9 @@ Você deve ver 6 containers: `b3-minio`, `b3-minio-init` (exited 0),
 ## Acessar a UI
 
 - URL: <http://localhost:8080>
-- Login: **admin** / **admin** (criado pelo `airflow-init`)
+- Login: **admin** / **admin** por padrão (criado pelo `airflow-init`).
+  Configurável via `AIRFLOW_ADMIN_USERNAME` / `AIRFLOW_ADMIN_PASSWORD`
+  no `.env` (M3).
 
 A DAG `pipeline_b3_diario` aparece **pausada** por padrão
 (`DAGS_ARE_PAUSED_AT_CREATION=true`). Para rodar:
@@ -80,6 +82,16 @@ A DAG `pipeline_b3_diario` aparece **pausada** por padrão
 Logs por task: clicar na task no grid → aba "Logs". Os arquivos
 correspondentes ficam em `airflow/logs/` no host (bind mount), úteis
 para debug fora da UI.
+
+### Exposição da config na UI (segurança)
+
+`AIRFLOW__WEBSERVER__EXPOSE_CONFIG` está em **`false`** (boa prática de
+segurança — M1). Com isso a UI **não** expõe o `airflow.cfg` renderizado
+em *Admin → Configurations*; esse arquivo pode conter connection strings
+e segredos. Para inspecionar a config pela UI durante o desenvolvimento,
+troque para `'true'` no `docker-compose.yml` (bloco
+`x-airflow-common.environment`) **temporariamente** e recrie os serviços
+— lembre de reverter depois.
 
 ---
 

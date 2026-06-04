@@ -30,11 +30,30 @@ x-airflow-common: &airflow-common
     dockerfile: airflow/Dockerfile
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # A senha do Postgres é parametrizada (M2). Mantemos a string de
+    # conexão em sincronia com o serviço `postgres` usando a MESMA
+    # variável e o MESMO default — trocar a senha no .env atualiza os
+    # dois lados de uma vez. (Vai além do M2 literal, que só citava o
+    # serviço postgres: deixar a conn hardcoded em `airflow` seria um
+    # footgun silencioso.)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # EXPOSE_CONFIG=false (M1): a UI não expõe o airflow.cfg renderizado
+    # (que pode conter conn strings e segredos). Para inspecionar config
+    # via UI em dev, trocar para "true" temporariamente.
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+    # Secret key do webserver (M4): assina cookies de sessão e tokens
+    # CSRF. Resolvida pelo Compose a partir do .env; em dev local
+    # qualquer valor serve, em produção precisa ser único e secreto.
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-CHANGE_ME_IN_PRODUCTION}
+    # Credenciais do admin criado pelo airflow-init (M3). Injetadas no
+    # ambiente do container; o bash do entrypoint as lê via $${VAR}
+    # (escapado para o Compose NÃO interpolar antes da hora — mesmo
+    # padrão comprovado do serviço mc-init logo abaixo).
+    AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+    AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
     # Endpoint do MinIO no DNS interno do Compose. O .env do host usa
     # localhost:9000 — DENTRO do container Docker, "localhost" é o
     # próprio container, não o MinIO. Por isso sobrescrevemos aqui.
@@ -109,7 +128,9 @@ services:
     container_name: b3-airflow-postgres
     environment:
       POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      # M2: senha parametrizada. Default `airflow` mantém o dev local
+      # funcionando sem .env; produção sobrescreve via POSTGRES_PASSWORD.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
       POSTGRES_DB: airflow
     volumes:
       - airflow_postgres_data:/var/lib/postgresql/data
@@ -140,14 +161,20 @@ services:
     # YAML `>` preserva newlines em linhas com indentação extra, e os
     # args do `airflow users create` ficam um por linha — bash recebe
     # `\n` literal antes do `|| true` e dispara "syntax error".
+    # M3: usuário/senha do admin vêm de AIRFLOW_ADMIN_USERNAME/PASSWORD
+    # (definidos no bloco environment de x-airflow-common, herdado aqui).
+    # Usamos $${VAR} — o `$$` faz o Compose NÃO interpolar; quem resolve
+    # é o bash DENTRO do container, lendo a env já injetada. É a forma
+    # comprovada (idêntica ao mc-init), sem ambiguidade de dupla
+    # interpolação dentro do bloco literal do entrypoint.
     entrypoint:
       - /bin/bash
       - -c
       - |
         airflow db migrate
         airflow users create \
-          --username admin \
-          --password admin \
+          --username "$${AIRFLOW_ADMIN_USERNAME}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD}" \
           --firstname Admin \
           --lastname User \
           --role Admin \

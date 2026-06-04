@@ -58,6 +58,15 @@ credentials.json
 *.swo
 
 # ============================================================
+# Configuração local de ferramentas (não versionada)
+# ============================================================
+# M7: permissões locais do Claude Code (específicas da máquina/usuário).
+# Template versionado em .claude/settings.example.json.
+.claude/settings.local.json
+# M8: estado local do dbt (user_id anônimo de telemetria), por máquina.
+dbt/.user.yml
+
+# ============================================================
 # Sistema operacional
 # ============================================================
 .DS_Store
