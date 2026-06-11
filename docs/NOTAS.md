@@ -302,9 +302,9 @@ dos schemas, latência de cold start do httpfs vs warm cache)
 ## Etapa 5 — Orquestração com Airflow
 
 **Início:** 2026-06-03
-**Fim:** —
+**Fim:** 2026-06-11
 
-### Conceitos a estudar nesta etapa
+### Conceitos
 
 - **DAG (Directed Acyclic Graph).** Estrutura que descreve um pipeline:
   vértices são tasks, arestas são dependências. Sem ciclos — uma task
@@ -386,14 +386,78 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   depois que migrate + create user terminou.
 
 ### Dúvidas
-(preencher após executar)
+
+- Quando vale a pena migrar de LocalExecutor para CeleryExecutor? Sei
+  que é questão de escala (volume de tasks > capacidade de uma máquina),
+  mas qual o sinal concreto na prática? Número de DAGs? Duração das
+  tasks? Concorrência?
+
+- O `warehouse.duckdb` é escrito por refresh_warehouse e por dbt_run em
+  sequência na DAG. Como são sequenciais, não houve lock. Mas se eu
+  rodar algo no host (notebook, DBeaver) enquanto a DAG executa, dá
+  LockError. Como ambientes de produção lidam com isso? Réplica de
+  leitura? Janela de manutenção? (Provavelmente DuckDB não é o banco
+  certo para concorrência alta — é OLAP embarcado, não servidor.)
+
+- O retry está configurado (retries=2, retry_delay=5min) mas só vou
+  validar empiricamente agora. Backoff fixo vs exponencial: quando cada
+  um faz sentido?
+
+- A DAG só roda `--modo diario` (hoje). Backfill histórico segue manual
+  via CLI. Como seria implementar backfill via DAG usando
+  `{{ data_interval_start }}` do Airflow? Vale o esforço para este
+  projeto?
 
 ### Descobertas
-(preencher após executar — sugestões para registrar: diferença
-prática entre `localhost:9000` no host e `minio:9000` no container,
-tempo de build da imagem custom, tempo do primeiro `airflow db
-migrate`, comportamento real do `logical_date` na primeira execução
-manual disparada via UI, retry observado em falha simulada)
+
+- **YAML folded scalar (`>`) quebra entrypoint bash silenciosamente.**
+  Usei `>` (folded scalar) no entrypoint do airflow-init com os
+  argumentos do `airflow users create` indentados a mais para
+  legibilidade. Regra sutil: `>` preserva newline literal quando há
+  indentação extra, então o bash recebeu `\n` no meio dos argumentos e
+  antes do `|| true`, quebrando a sintaxe do subshell ("syntax error
+  near unexpected token"). Solução: forma de array `[/bin/bash, -c, |]`
+  com bloco literal `|` e continuação `\` no fim de cada linha. Lição:
+  em entrypoint multi-linha no Compose, bloco literal `|` é mais seguro
+  que folded `>`.
+
+- **`.gitignore` com trailing slash impede até a negação do .gitkeep.**
+  O pattern `airflow/logs/` (com barra final) faz o git nem entrar no
+  diretório, então `!airflow/logs/.gitkeep` não tem efeito — a negação
+  não consegue "resgatar" um arquivo dentro de uma pasta que o git
+  ignorou inteira. Além disso, uma regra geral `logs/` em outra seção
+  do mesmo .gitignore também capturava o diretório. Solução: usar
+  `airflow/logs/*` (ignora o conteúdo mas deixa a pasta acessível) +
+  `!airflow/logs/.gitkeep`. Lição: para versionar pasta vazia, ignore
+  o conteúdo (`pasta/*`), não a pasta (`pasta/`).
+
+- **Airflow mostra horários em UTC na UI apesar de timezone configurado.**
+  Configurei `AIRFLOW__CORE__DEFAULT_TIMEZONE=America/Sao_Paulo`, mas a
+  UI mostra "Next dagrun" em UTC (ex: 23:00 UTC = 20:00 BRT). A config
+  afeta o agendamento (quando a DAG dispara), não a exibição. Tive que
+  converter mentalmente UTC-3. Não é bug — é comportamento conhecido do
+  Airflow. Lição: timezone-aware scheduling ≠ timezone-aware display.
+
+- **Endpoint do MinIO difere entre host e container.** No host, o código
+  acessa o MinIO via `localhost:9000`. Dentro de um container do mesmo
+  docker-compose, `localhost` aponta para o próprio container — o MinIO
+  é alcançado pelo nome do serviço (`minio:9000`). Resolvi injetando
+  `MINIO_ENDPOINT=http://minio:9000` no ambiente dos containers do
+  Airflow via compose, enquanto o `.env` do host mantém `localhost`. O
+  `load_dotenv(override=False)` garante que a variável injetada pelo
+  compose vence o `.env`. Lição: rede Docker resolve serviços por nome,
+  não por localhost.
+
+- **Lock de dependências conflita com imagem base que já tem
+  constraints.** Tentei usar `requirements.lock` no Dockerfile do
+  Airflow, mas a imagem `apache/airflow:2.10.5` já fixa versões de libs
+  comuns (Jinja2, click, pydantic). O lock gerado de um venv standalone
+  bateu de frente e quebrou o build. Solução: Dockerfile usa
+  `requirements.txt` (pip resolve contra as constraints da imagem);
+  o lock fica como referência do ambiente host. Lição: ao construir
+  sobre imagem base, ela já é parte do lock — impor outro por cima
+  cria conflito. A forma correta seria o constraints file oficial do
+  Airflow.
 
 ---
 
