@@ -24,16 +24,17 @@ processo de cada vez, mas impede leitura concorrente.
   concorrente do `warehouse.duckdb` enquanto a DAG escreve — aí separar
   conexão read-only do setup de escrita.
 
-### DT-5.2 — `requirements` único arrasta deps de dev para a imagem
-A imagem do Airflow instala o conjunto completo (lock incluso), o que
-traz `jupyter`, `jupyterlab`, `plotly`, `ipykernel` etc. para o runtime
-do orquestrador — ~50 MB+ que nenhuma task usa.
+### DT-5.2 — `requirements` único arrasta deps de dev para a imagem ✅ *resolvida*
+A imagem do Airflow instalava o conjunto completo, trazendo `jupyter`,
+`ipykernel`, `plotly` etc. para o runtime do orquestrador — peso que
+nenhuma task usa.
 
-- **Motivo do adiamento:** simplicidade de manter um único conjunto de
-  deps; o overhead de imagem é irrelevante em ambiente local single-host.
-- **Gatilho:** otimização de imagem no refactoring estruturado pós-Etapa
-  7 — separar deps de runtime (ingestão/warehouse/dbt) das de
-  exploração (jupyter/plotly), se a imagem virar incômodo.
+- **Resolução (2026-06-18):** `jupyter`, `ipykernel` e `plotly` saíram do
+  `requirements.txt` e foram para `requirements-dev.txt`. Como o
+  `airflow/Dockerfile` instala apenas `requirements.txt`, a imagem do
+  Airflow ficou mais enxuta automaticamente, sem tocar no Dockerfile. A
+  motivação imediata foi a segurança (ver DT-SEC.4), mas o efeito colateral
+  resolve esta dívida de peso de imagem.
 
 ### DT-5.3 — Retry declarado mas nunca exercitado
 A DAG define `retries=2` e `retry_delay=5min`, mas isso nunca foi
@@ -71,17 +72,17 @@ previsto.
 
 - **Resolução (aplicada):** fallback ativo — o `airflow/Dockerfile`
   voltou a usar `requirements.txt` (`>=`), deixando o `pip` resolver as
-  versões contra as constraints da imagem base. O `requirements.lock`
-  **permanece no repo** como referência do ambiente HOST (venv local de
-  ingestão/warehouse/dbt), apenas fora do build do Airflow.
-- **Estado:** o build reprodutível do **host** está coberto pelo lock; o
-  build da **imagem do Airflow** depende da resolução do pip contra a
-  imagem base, que é estável o suficiente para um projeto de portfólio.
-- **Pendência (baixa prioridade):** gerar um lock que respeite as
-  constraints oficiais do Airflow, p.ex.:
+  versões contra as constraints da imagem base.
+- **Estado:** a reprodutibilidade do build da **imagem do Airflow** vem
+  da imagem base `apache/airflow:2.10.5` (que já fixa as versões das libs
+  comuns) + `requirements.txt`, estável o suficiente para um projeto de
+  portfólio.
+- **Atualização (2026-06-18):** o `requirements.lock` foi **removido** do
+  repo (ver DT-SEC.4) — era órfão e desatualizado. Se um dia for preciso
+  um lock determinístico, gerá-lo via constraints oficiais do Airflow,
+  p.ex.:
   `pip install -c https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.x.txt`
-  e então as deps do projeto — só vale o esforço se o build da imagem
-  precisar de reprodutibilidade byte-a-byte.
+  e então as deps do projeto.
 
 ### DT-SEC.2 — Defaults de credenciais permanecem fracos em dev
 `POSTGRES_PASSWORD`, `AIRFLOW_ADMIN_*` e `AIRFLOW__WEBSERVER__SECRET_KEY`
@@ -105,6 +106,22 @@ severidade nativamente.
 - **Gatilho:** se o build começar a falhar por CVEs de baixa severidade
   sem fix disponível, introduzir `--ignore-vuln` pontual ou um passo de
   triagem por severidade.
+
+### DT-SEC.4 — `requirements.lock` removido ✅ *resolvida*
+O `requirements.lock` foi **removido** do repositório (2026-06-18). Era um
+arquivo **órfão**: não entrava no `airflow/Dockerfile` (que usa
+`requirements.txt` por DT-SEC.1) nem no CI (que passou a auditar só o
+runtime), e estava **desatualizado** — congelado quando Jupyter ainda
+fazia parte do `requirements.txt`, listava transitivas de dev (`bleach`,
+`tornado`, `jupyter-server`) e os 8 CVEs que faziam o `pip-audit` falhar.
+
+- **Decisão:** mantê-lo dava **falsa sensação de reprodutibilidade** sem
+  uso concreto. A reprodutibilidade do build do Airflow já vem da imagem
+  base `apache/airflow:2.10.5` (constraints próprias) + `requirements.txt`.
+- **Gatilho (recriar):** se reprodutibilidade exata do ambiente HOST virar
+  requisito, gerar um lock determinístico **via constraints oficiais do
+  Airflow** (constraints-2.10.5), não por `pip freeze` de um venv
+  standalone — ver DT-SEC.1.
 
 ---
 

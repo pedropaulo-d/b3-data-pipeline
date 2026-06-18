@@ -1,12 +1,17 @@
 # ============================================================
+# requirements.txt — RUNTIME do pipeline (ingestão, warehouse, dbt,
+# Airflow). É a única superfície auditada pelo CI (pip-audit) e a única
+# instalada na imagem do Airflow. Ferramentas de desenvolvimento /
+# exploração (Jupyter, plotly, pip-audit) vivem em requirements-dev.txt.
+# ============================================================
+
+# ============================================================
 # Etapa 1 — Ingestão
 # ============================================================
 pandas>=2.2.0
 yfinance>=0.2.40
 pyarrow>=15.0.0
 requests>=2.31.0
-ipykernel>=6.29.0
-jupyter>=1.0.0
 
 # ============================================================
 # Etapa 2 — Object Storage (MinIO, atual)
@@ -18,7 +23,6 @@ python-dotenv>=1.0.0
 # Etapa 3 — Warehouse analítico (DuckDB)
 # ============================================================
 duckdb>=0.10.0
-plotly>=5.20.0
 
 # ============================================================
 # Etapa 4 — Transformações (dbt)
@@ -36,4 +40,4 @@ dbt-duckdb>=1.7.0
 # Etapa 7 — Dashboard
 # ============================================================
 # streamlit>=1.32.0
-# (plotly já entra na Etapa 3 para o notebook exploratório)
+# (plotly é dependência de exploração — ver requirements-dev.txt)

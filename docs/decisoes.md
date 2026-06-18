@@ -582,3 +582,20 @@ Natural keys (`ticker`, `data`) **preservadas** nas dimensões como atributos.
 - **Coerência com a Etapa 4.** Mantém o princípio (pesado/relido → table) e abre exceção apenas onde o custo justifica, documentando o porquê.
 
 **Trade-off aceito.** `fato_dividendos` como view foge da regra "marts = table" — alguém lendo o `dbt_project.yml` poderia estranhar. Mitigado pelo `{{ config(materialized='view') }}` explícito no modelo e por esta entrada.
+
+---
+
+## 2026-06-18 — Segurança — Separação runtime vs dev em requirements; CI audita só o runtime (Postura A)
+
+**Contexto.** O CI de segurança (`pip-audit`) passou a falhar com **8 CVEs** em transitivas do Jupyter (`bleach`, `jupyter-server`, `tornado`). Esses pacotes não fazem parte do runtime do pipeline (ingestão, warehouse, dbt, Airflow) — entram apenas via `jupyter`/`ipykernel`/`plotly`, usados em notebooks de exploração. A auditoria estava rodando sobre o `requirements.lock`, que incluía essas transitivas de desenvolvimento.
+
+**Decisão.** Separar **runtime** de **desenvolvimento**: `requirements.txt` fica só com o runtime do pipeline (pandas, yfinance, pyarrow, requests, boto3, python-dotenv, duckdb, dbt-core, dbt-duckdb); `jupyter`, `ipykernel` e `plotly` movem-se para `requirements-dev.txt` (ao lado do `pip-audit`). O CI passa a auditar **apenas `requirements.txt`** (`pip-audit -r requirements.txt`), não o lock nem o ambiente resolvido. Versões inalteradas — só mudança de arquivo.
+
+**Racional.**
+- **Jupyter não é runtime — é ferramenta de análise local.** O deploy (imagem do Airflow + execução do pipeline) nunca importa Jupyter. Auditar Jupyter no CI mede risco de uma superfície que não vai a produção.
+- **Postura A: auditar a superfície de produção, não o dev local.** O CI protege o que é entregue. Dependências de desenvolvimento são responsabilidade do desenvolvedor na sua máquina; falhar o build por CVE de `bleach` (renderização de HTML em notebook) seria ruído, não sinal.
+- **Efeito colateral positivo:** a imagem do Airflow (que instala só `requirements.txt`) fica mais enxuta automaticamente, resolvendo a dívida DT-5.2.
+
+**Trade-off aceito.** CVEs em ferramentas de dev deixam de ser sinalizados pelo CI — quem roda notebooks assume esse risco localmente. Aceitável para projeto de portfólio single-host: o dev é o próprio autor, e a superfície real (deploy) continua coberta.
+
+**Adendo (2026-06-18) — remoção do `requirements.lock`.** Fechando esta mesma rodada, o `requirements.lock` foi **removido** do repositório. Estava órfão (não usado no `airflow/Dockerfile` nem no CI) e desatualizado (gerado antes da separação, listava Jupyter e os 8 CVEs). Mantê-lo dava falsa sensação de reprodutibilidade sem consumidor real. A reprodutibilidade do build do Airflow já vem da imagem base `apache/airflow:2.10.5` (constraints próprias) + `requirements.txt`. Se um lock determinístico virar requisito no futuro, gerá-lo via constraints oficiais do Airflow (constraints-2.10.5), não por `pip freeze` de venv standalone (ver DT-SEC.1/DT-SEC.4).

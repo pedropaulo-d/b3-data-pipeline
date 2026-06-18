@@ -36,19 +36,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Instala SÓ o pip-audit (não o requirements-dev completo): a
+      # auditoria abaixo roda sobre o arquivo declarado, não sobre o
+      # ambiente do runner, então não há motivo de instalar Jupyter aqui.
       - name: Instalar pip-audit
-        run: pip install -r requirements-dev.txt
+        run: pip install pip-audit
 
-      # Audita o lock (estado pinado real). Se o lock ainda não existir,
-      # cai para o requirements.txt. pip-audit sai com código != 0 — e
-      # portanto FALHA o job — quando encontra qualquer CVE conhecido.
+      # Auditamos APENAS o runtime declarado (requirements.txt). As
+      # dependências de desenvolvimento (Jupyter, plotly — em
+      # requirements-dev.txt) são responsabilidade local e NÃO fazem parte
+      # do deploy, logo não compõem a superfície de produção. O lock NÃO é
+      # auditado: foi gerado de um venv com deps de dev (ver DT-SEC.4) e
+      # auditá-lo reintroduziria CVEs de transitivas do Jupyter.
+      #
+      # pip-audit -r resolve a árvore de deps DO ARQUIVO (não do ambiente)
+      # e sai com código != 0 — falhando o job — em qualquer CVE conhecido.
       - name: Rodar pip-audit
-        run: |
-          if [ -f requirements.lock ]; then
-            pip-audit -r requirements.lock
-          else
-            pip-audit -r requirements.txt
-          fi
+        run: pip-audit -r requirements.txt
 
   # ----------------------------------------------------------
   # 2) Varredura de secrets no histórico do Git

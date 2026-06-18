@@ -1,13 +1,28 @@
 # ============================================================
-# Dependências de DESENVOLVIMENTO / segurança (M6)
+# Dependências de DESENVOLVIMENTO / EXPLORAÇÃO (não-runtime)
 # ============================================================
-# Não vão para a imagem do Airflow nem para o runtime do pipeline.
-# Instale num venv local quando for auditar o projeto:
-#   pip install -r requirements-dev.txt
+# NADA aqui faz parte do runtime do pipeline (ingestão, warehouse, dbt,
+# Airflow). São ferramentas locais: notebooks exploratórios (Jupyter,
+# plotly) e auditoria de segurança (pip-audit). NÃO vão para a imagem do
+# Airflow e NÃO são auditadas pelo CI — dev local não é superfície de
+# produção. Por isso CVEs em transitivas do Jupyter (bleach, tornado,
+# jupyter-server) não falham o build.
 #
-# Auditoria de CVEs nas dependências Python. Roda no CI
-# (.github/workflows/security.yml) e localmente:
-#   pip-audit -r requirements.lock
+# Para desenvolver / rodar notebooks, instale runtime + dev:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+# ------------------------------------------------------------
+# Exploração — notebooks e visualização
+# ------------------------------------------------------------
+ipykernel>=6.29.0
+jupyter>=1.0.0
+plotly>=5.20.0
+
+# ------------------------------------------------------------
+# Segurança — auditoria de CVEs nas dependências Python. Roda no CI
+# (.github/workflows/security.yml) sobre o runtime e localmente:
+#   pip-audit -r requirements.txt
+# ------------------------------------------------------------
 pip-audit>=2.7.0
 
 # ------------------------------------------------------------

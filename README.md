@@ -133,9 +133,8 @@ b3-data-pipeline/
 ├── .gitignore
 ├── README.md
 ├── CLAUDE.md                   # Diretrizes para sessões com Claude Code
-├── requirements.txt            # Deps diretas (intenção, >=; usado no build do Airflow)
-├── requirements.lock           # Deps pinadas do HOST (==; referência, não usado no Airflow)
-└── requirements-dev.txt        # Ferramentas de dev/segurança (pip-audit)
+├── requirements.txt            # RUNTIME do pipeline (>=; build do Airflow + auditado pelo CI)
+└── requirements-dev.txt        # Dev/exploração (Jupyter, plotly, pip-audit); não auditado pelo CI
 ```
 
 > A pasta `dashboard/` ainda não existe — nasce na Etapa 7. O repositório evolui em camadas, não nasce pronto.
@@ -161,7 +160,10 @@ source .venv/bin/activate
 .venv\Scripts\Activate.ps1
 
 # 4. Instalar dependências
+#    Runtime do pipeline (ingestão, warehouse, dbt):
 pip install -r requirements.txt
+#    Para desenvolver / rodar notebooks (Jupyter, plotly) e auditar:
+#    pip install -r requirements.txt -r requirements-dev.txt
 
 # 5. Configurar credenciais do MinIO (raw layer)
 cp .env.example .env       # Linux/macOS
@@ -214,45 +216,55 @@ docker compose down -v    # remove TAMBÉM volumes (apaga raw e metastore do Air
 
 ## Dependências e CI de segurança
 
-Três arquivos de dependências, com papéis distintos:
+Dois arquivos de dependências, com papéis distintos:
 
-| Arquivo                 | Papel       | Versões | Quem consome |
-|-------------------------|-------------|---------|--------------|
-| `requirements.txt`      | **intenção** | `>=`   | Build da imagem do Airflow (pip resolve contra as constraints da imagem oficial) |
-| `requirements.lock`     | **estado (host)** | `==` | Referência das versões testadas no ambiente HOST (venv local) |
-| `requirements-dev.txt`  | dev/segurança | `>=`  | Auditoria local e CI (`pip-audit`) |
+| Arquivo                 | Papel       | Versões | Quem consome | Auditado pelo CI? |
+|-------------------------|-------------|---------|--------------|-------------------|
+| `requirements.txt`      | **runtime (intenção)** | `>=`   | Build da imagem do Airflow + `pip-audit` no CI | **Sim** |
+| `requirements-dev.txt`  | dev/exploração/segurança | `>=`  | Notebooks (Jupyter, plotly) e auditoria local (`pip-audit`) | Não |
 
-`requirements.txt` declara o que o projeto **quer** (deps diretas, com
-`>=`, legível) e é o arquivo usado no `docker build` da imagem do Airflow:
-o `pip` resolve as versões respeitando as constraints da imagem base
-`apache/airflow:2.10.5`.
+`requirements.txt` declara o **runtime** do pipeline — só o que ingestão,
+warehouse, dbt e Airflow precisam para rodar (deps diretas, `>=`,
+legível). É o arquivo usado no `docker build` da imagem do Airflow (o
+`pip` resolve as versões respeitando as constraints da imagem base
+`apache/airflow:2.10.5`) **e** a única superfície auditada pelo CI.
 
-`requirements.lock` congela o que o projeto **tem** no ambiente **HOST**
-(todas as deps, transitivas inclusas, com `==`), onde ingestão, warehouse
-e dbt rodam fora do Docker (venv local). **Ele NÃO é usado no build da
-imagem do Airflow**: pinar versões `==` geradas num venv standalone
-conflita com as constraints que a imagem oficial fixa, e o `pip install`
-quebra (ver [`docs/divida_tecnica.md`](docs/divida_tecnica.md), DT-SEC.1).
-Regenerar o lock após mudar deps:
+`requirements-dev.txt` reúne o que só existe em **desenvolvimento**:
+notebooks exploratórios (Jupyter, plotly) e auditoria de segurança
+(pip-audit). Não entra na imagem do Airflow nem é auditado pelo CI — dev
+local não é superfície de produção, então CVEs em transitivas do Jupyter
+(bleach, tornado, jupyter-server) não fazem o build falhar. Para
+desenvolver ou rodar os notebooks, instale **ambos**:
 
 ```bash
-python -m venv .venv && .venv\Scripts\Activate.ps1   # Windows
-pip install -r requirements.txt
-pip freeze > requirements.lock
+pip install -r requirements.txt -r requirements-dev.txt
 ```
+
+O projeto **não mantém um `requirements.lock`**. A reprodutibilidade do
+build da imagem do Airflow vem da imagem base `apache/airflow:2.10.5` (que
+já fixa as versões das libs comuns) + `requirements.txt`. Um lock `==`
+gerado por `pip freeze` de um venv standalone conflitava com as
+constraints da imagem oficial e não tinha consumidor real (nem Dockerfile,
+nem CI), então foi removido (ver
+[`docs/divida_tecnica.md`](docs/divida_tecnica.md), DT-SEC.1/DT-SEC.4). Se
+um dia um lock determinístico virar requisito, gerá-lo via as constraints
+oficiais do Airflow (constraints-2.10.5).
 
 **CI de segurança** (diferencial de portfólio): o repositório roda
 [`.github/workflows/security.yml`](.github/workflows/security.yml) em todo
 push para `main` e em todo pull request. Dois controles:
 
-- **`pip-audit`** — procura CVEs conhecidos nas dependências Python
-  (audita o `requirements.lock`). Falha o build em qualquer CVE.
+- **`pip-audit`** — procura CVEs conhecidos no **runtime** do pipeline
+  (`pip-audit -r requirements.txt`). Falha o build em qualquer CVE.
+  Auditamos só o runtime de propósito: as deps de desenvolvimento
+  (Jupyter etc.) não fazem parte do deploy.
 - **`gitleaks`** — procura secrets vazados no histórico do Git. Falha o
   build se encontrar.
 
-Localmente: `pip install -r requirements-dev.txt && pip-audit -r requirements.lock`.
-`gitleaks` e `trufflehog` são binários (não pip) — ver `requirements-dev.txt`
-para instalação via Docker ou gerenciador de pacotes.
+Localmente: `pip install pip-audit && pip-audit -r requirements.txt`
+(deve reportar *No known vulnerabilities found*). `gitleaks` e
+`trufflehog` são binários (não pip) — ver `requirements-dev.txt` para
+instalação via Docker ou gerenciador de pacotes.
 
 A dívida técnica consciente do projeto fica registrada em
 [`docs/divida_tecnica.md`](docs/divida_tecnica.md).
