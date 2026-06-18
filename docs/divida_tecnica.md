@@ -108,4 +108,22 @@ severidade nativamente.
 
 ---
 
+## Etapa 6 — Indicadores e métricas financeiras
+
+### DT-6.1 — Deprecation do dbt 1.11 em testes genéricos
+O `dbt build` emite `MissingArgumentsPropertyInGenericTestDeprecation`
+(11 ocorrências). A partir de uma versão futura do dbt, os argumentos de
+testes genéricos (ex.: `relationships` com `to`/`field`) precisam migrar
+para a propriedade aninhada `arguments:` no `schema.yml`, em vez de
+ficarem soltos ao lado de `name:`.
+
+- **Motivo do adiamento:** é só **deprecation warning** — não quebra nada
+  hoje, todos os 49 testes passam. Migrar agora seria edição mecânica de
+  11 blocos sem ganho funcional imediato.
+- **Gatilho:** tratar no refactoring estruturado pós-Etapa 7, ou no
+  momento em que a versão do dbt for atualizada (quando o warning vira
+  erro).
+
+---
+
 <!-- Próximas etapas adicionam itens abaixo, agrupados por etapa de origem. -->

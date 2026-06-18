@@ -22,40 +22,18 @@ import io
 import logging
 from datetime import date
 
-import boto3
 import pandas as pd
-from botocore.client import Config
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from ingestion.config import (
     COLUNAS_SAIDA,
-    MINIO_ACCESS_KEY,
     MINIO_BUCKET,
     MINIO_ENDPOINT,
-    MINIO_REGION,
-    MINIO_SECRET_KEY,
     RAW_PREFIX,
 )
+from ingestion.s3_client import criar_cliente_s3
 
 logger = logging.getLogger(__name__)
-
-
-def _criar_cliente_s3():
-    """Constrói um cliente boto3 S3 apontando para o MinIO.
-
-    ``signature_version='s3v4'`` é obrigatório para autenticar contra o
-    MinIO. ``addressing_style='path'`` força URLs do tipo
-    ``http://endpoint/bucket/key`` em vez de ``http://bucket.endpoint/key``
-    — virtual-hosted style não funciona em endpoint sem DNS wildcard.
-    """
-    return boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name=MINIO_REGION,
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
 
 
 def salvar_particionado(df: pd.DataFrame) -> int:
@@ -90,7 +68,7 @@ def salvar_particionado(df: pd.DataFrame) -> int:
         logger.info("DataFrame vazio — nada a gravar.")
         return 0
 
-    s3 = _criar_cliente_s3()
+    s3 = criar_cliente_s3()
 
     objetos_escritos = 0
     for data_pregao, grupo in df.groupby("data", sort=True):

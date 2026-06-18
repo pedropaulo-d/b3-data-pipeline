@@ -129,3 +129,169 @@ models:
         description: "True se dia = 1."
       - name: eh_fim_mes
         description: "True se a data é o último dia do mês."
+
+  # -------------------------------------------------------------
+  # FATO DE DIVIDENDOS (Etapa 6)
+  # -------------------------------------------------------------
+  - name: fato_dividendos
+    description: >
+      Fato de dividendos — 1 linha por (empresa, data-ex). Materializada
+      como VIEW (volume ínfimo). Dimensões conformadas: reusa dim_empresa
+      e dim_tempo. Métrica: valor_dividendo (R$ por ação).
+    columns:
+      - name: empresa_id
+        description: "FK para dim_empresa (surrogate key)."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_empresa')
+              field: empresa_id
+      - name: tempo_id
+        description: "FK para dim_tempo (formato YYYYMMDD), alinhada pela data-ex."
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_tempo')
+              field: tempo_id
+      - name: valor_dividendo
+        description: "Valor pago por ação na data-ex (R$). Sempre > 0 (limpeza no staging)."
+        tests:
+          - not_null
+
+  # -------------------------------------------------------------
+  # INDICADORES DE MERCADO — grão diário (Etapa 6)
+  # -------------------------------------------------------------
+  - name: mart_indicadores_diarios
+    description: >
+      Indicadores de mercado, 1 linha por (empresa, pregão). BASE DE PREÇO:
+      retorno, médias móveis, volatilidade e drawdown usam SEMPRE o
+      fechamento AJUSTADO (proventos e splits embutidos — evita risco
+      artificial em data-ex). Materializada como table.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - empresa_id
+            - tempo_id
+    columns:
+      - name: empresa_id
+        description: "FK para dim_empresa (surrogate key)."
+        tests:
+          - not_null
+      - name: tempo_id
+        description: "FK para dim_tempo (formato YYYYMMDD)."
+        tests:
+          - not_null
+      - name: data
+        description: "Data do pregão (DATE), trazida de dim_tempo para ordenar as janelas."
+      - name: fechamento_ajustado
+        description: "Fechamento ajustado por proventos e splits — base de TODOS os indicadores deste mart."
+      - name: volume
+        description: "Volume em quantidade (carregado da fato; nullable). Usado no volume_medio do resumo."
+      - name: retorno_simples
+        description: "Retorno simples vs pregão anterior (fechamento ajustado). NULL no 1º pregão do ticker."
+      - name: retorno_log
+        description: "Retorno logarítmico vs pregão anterior. Aditivo no tempo — base da volatilidade."
+      - name: retorno_acumulado
+        description: "Retorno acumulado vs 1º pregão da série do ticker. 0 no 1º pregão."
+      - name: media_movel_7d
+        description: "Média móvel do fechamento ajustado, janela de 7 pregões (parcial até completar 7)."
+      - name: media_movel_30d
+        description: "Média móvel do fechamento ajustado, janela de 30 pregões."
+      - name: media_movel_90d
+        description: "Média móvel do fechamento ajustado, janela de 90 pregões."
+      - name: media_movel_200d
+        description: "Média móvel do fechamento ajustado, janela de 200 pregões."
+      - name: pregoes_janela_7d
+        description: "Nº de pregões efetivos na janela de 7 (< 7 sinaliza janela parcial — Forma A)."
+      - name: pregoes_janela_30d
+        description: "Nº de pregões efetivos na janela de 30."
+      - name: pregoes_janela_90d
+        description: "Nº de pregões efetivos na janela de 90."
+      - name: pregoes_janela_200d
+        description: "Nº de pregões efetivos na janela de 200."
+      - name: volatilidade_30d
+        description: "Desvio-padrão amostral do retorno log, janela 30 pregões (DIÁRIA). NULL até haver 2 retornos."
+      - name: volatilidade_30d_anual
+        description: "Volatilidade 30d anualizada (× √252)."
+      - name: volatilidade_90d
+        description: "Desvio-padrão amostral do retorno log, janela 90 pregões (diária)."
+      - name: volatilidade_90d_anual
+        description: "Volatilidade 90d anualizada (× √252)."
+      - name: volatilidade_252d
+        description: "Desvio-padrão amostral do retorno log, janela 252 pregões (diária)."
+      - name: volatilidade_252d_anual
+        description: "Volatilidade 252d anualizada (× √252)."
+      - name: pico_historico
+        description: "Máximo acumulado do fechamento ajustado até o pregão (base do drawdown)."
+      - name: drawdown
+        description: "Queda vs pico histórico (fechamento_ajustado / pico - 1). Sempre <= 0."
+
+  # -------------------------------------------------------------
+  # INDICADORES DE MERCADO — resumo por ticker (Etapa 6)
+  # -------------------------------------------------------------
+  - name: mart_indicadores_resumo
+    description: >
+      Resumo de indicadores, 1 linha por ticker (agrega
+      mart_indicadores_diarios). Cartão-resumo do período por empresa.
+    columns:
+      - name: empresa_id
+        description: "FK para dim_empresa (surrogate key)."
+        tests:
+          - not_null
+      - name: ticker
+        description: "Código B3, trazido de dim_empresa."
+        tests:
+          - not_null
+          - unique
+      - name: max_drawdown
+        description: "Pior queda da série (MIN do drawdown diário). Valor <= 0."
+        tests:
+          - not_null
+      - name: retorno_acumulado_total
+        description: "Retorno acumulado no último pregão da série (via arg_max por data)."
+      - name: volatilidade_media_30d
+        description: "Média das volatilidades 30d ANUALIZADAS ao longo do período."
+      - name: retorno_medio_diario
+        description: "Média do retorno simples diário."
+      - name: volume_medio
+        description: "Volume médio em quantidade (AVG ignora NULLs)."
+      - name: primeiro_pregao
+        description: "Data do primeiro pregão da série (MIN)."
+      - name: ultimo_pregao
+        description: "Data do último pregão da série (MAX)."
+      - name: total_pregoes
+        description: "Número de pregões na série (COUNT)."
+
+  # -------------------------------------------------------------
+  # DIVIDEND YIELD — trailing 12m, grão diário (Etapa 6)
+  # -------------------------------------------------------------
+  - name: mart_dividend_yield
+    description: >
+      Dividend yield trailing 12 meses, 1 linha por (empresa, pregão).
+      BASE DE PREÇO: fechamento BRUTO no denominador (o ajustado já desconta
+      proventos — usá-lo contaria o dividendo duas vezes). dy_12m é fração
+      (0.08 = 8%); 0 quando não houve provento nos últimos 365 dias.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - empresa_id
+            - tempo_id
+    columns:
+      - name: empresa_id
+        description: "FK para dim_empresa (surrogate key)."
+        tests:
+          - not_null
+      - name: tempo_id
+        description: "FK para dim_tempo (formato YYYYMMDD)."
+        tests:
+          - not_null
+      - name: data
+        description: "Data do pregão (DATE), de dim_tempo."
+      - name: fechamento_bruto
+        description: "Fechamento BRUTO do dia (denominador do yield, sem ajuste de proventos)."
+      - name: dividendos_12m
+        description: "Soma dos proventos por ação cuja data-ex caiu nos últimos 365 dias (R$)."
+      - name: dy_12m
+        description: "Dividend yield trailing 12m = dividendos_12m / fechamento_bruto. Fração; 0 se sem provento."
+        tests:
+          - not_null

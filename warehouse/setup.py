@@ -1,13 +1,16 @@
 """Setup do schema ``raw`` no warehouse DuckDB.
 
-A única estrutura criada por este módulo é a view ``raw.cotacoes``,
-que aponta para os Parquet do raw layer no MinIO via ``read_parquet``
-com ``hive_partitioning = true``. View — não tabela materializada —
-para preservar o conceito de raw imutável no object storage e refletir
-automaticamente novas datas ingeridas (ver ``docs/decisoes.md``).
+Este módulo cria duas views sobre o raw layer no MinIO, ambas via
+``read_parquet`` com ``hive_partitioning = true`` (View — não tabela
+materializada — para preservar o raw imutável no object storage e
+refletir automaticamente novas ingestões; ver ``docs/decisoes.md``):
 
-Schemas ``staging`` e ``marts`` NÃO são criados aqui: vão nascer na
-Etapa 4 sob responsabilidade do dbt.
+- ``raw.cotacoes``   — Parquet de cotações, particionado por dia.
+- ``raw.dividendos`` — Parquet de dividendos, particionado por ano
+  (Etapa 6).
+
+Schemas ``staging`` e ``marts`` NÃO são criados aqui: nascem no dbt
+(Etapas 4 e 6).
 
 Uso direto::
 
@@ -19,7 +22,7 @@ import sys
 
 import duckdb
 
-from ingestion.config import MINIO_BUCKET, RAW_PREFIX
+from ingestion.config import MINIO_BUCKET, RAW_PREFIX, RAW_PREFIX_DIVIDENDOS
 from warehouse.conexao import CAMINHO_WAREHOUSE, obter_conexao
 
 logger = logging.getLogger(__name__)
@@ -35,8 +38,18 @@ def _glob_raw_cotacoes() -> str:
     return f"s3://{MINIO_BUCKET}/{RAW_PREFIX}/ano=*/mes=*/dia=*/cotacoes.parquet"
 
 
+def _glob_raw_dividendos() -> str:
+    """Monta o glob ``s3://...`` que casa com todas as partições de ano.
+
+    Dividendos particionam só por ano (``ano=*/dividendos.parquet``),
+    refletindo a esparsidade dos proventos. ``hive_partitioning`` expõe
+    ``ano`` como coluna virtual derivada do path.
+    """
+    return f"s3://{MINIO_BUCKET}/{RAW_PREFIX_DIVIDENDOS}/ano=*/dividendos.parquet"
+
+
 def criar_schema_raw(con: duckdb.DuckDBPyConnection) -> None:
-    """Cria o schema ``raw`` e a view ``raw.cotacoes``.
+    """Cria o schema ``raw`` e as views ``raw.cotacoes`` e ``raw.dividendos``.
 
     Idempotente: usa ``CREATE SCHEMA IF NOT EXISTS`` e
     ``CREATE OR REPLACE VIEW`` — rodar duas vezes deixa o estado
@@ -47,8 +60,10 @@ def criar_schema_raw(con: duckdb.DuckDBPyConnection) -> None:
             Precisa estar com ``httpfs`` carregado e ``s3_*`` configurado
             (ambos feitos por ``obter_conexao``).
     """
-    glob = _glob_raw_cotacoes()
-    logger.info("Criando schema raw e view raw.cotacoes apontando para %s", glob)
+    glob_cotacoes = _glob_raw_cotacoes()
+    glob_dividendos = _glob_raw_dividendos()
+    logger.info("Criando schema raw e view raw.cotacoes apontando para %s", glob_cotacoes)
+    logger.info("Criando view raw.dividendos apontando para %s", glob_dividendos)
 
     con.execute("CREATE SCHEMA IF NOT EXISTS raw")
     con.execute(
@@ -56,7 +71,17 @@ def criar_schema_raw(con: duckdb.DuckDBPyConnection) -> None:
         CREATE OR REPLACE VIEW raw.cotacoes AS
         SELECT *
         FROM read_parquet(
-            '{glob}',
+            '{glob_cotacoes}',
+            hive_partitioning = true
+        )
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW raw.dividendos AS
+        SELECT *
+        FROM read_parquet(
+            '{glob_dividendos}',
             hive_partitioning = true
         )
         """
@@ -64,39 +89,63 @@ def criar_schema_raw(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _diagnostico(con: duckdb.DuckDBPyConnection) -> None:
-    """Imprime um resumo do que a view ``raw.cotacoes`` enxerga.
+    """Imprime um resumo do que as views ``raw.*`` enxergam.
 
-    Roda três queries baratas:
-    - Contagem total de linhas
-    - Número de tickers distintos
-    - Range (min, max) da coluna ``data``
-
-    Se a contagem voltar zero, sugere rodar a ingestão.
+    Reporta cotações e dividendos. Erro de leitura (o prefixo daquela
+    fonte ainda não existe no bucket) vira aviso, não exceção — é
+    esperado inspecionar o warehouse antes de ter rodado *todas* as
+    ingestões.
     """
-    total = con.execute("SELECT COUNT(*) FROM raw.cotacoes").fetchone()[0]
+    print("=" * 60)
+    print("Warehouse DuckDB pronto.")
+    print(f"  Arquivo: {CAMINHO_WAREHOUSE}")
+    _resumir_cotacoes(con)
+    _resumir_dividendos(con)
+    print("=" * 60)
+
+
+def _resumir_cotacoes(con: duckdb.DuckDBPyConnection) -> None:
+    """Resumo de raw.cotacoes (linhas, tickers, range de datas)."""
+    print("\n  raw.cotacoes (cotações — partição por dia)")
+    try:
+        total = con.execute("SELECT COUNT(*) FROM raw.cotacoes").fetchone()[0]
+    except duckdb.IOException:
+        total = 0
     if total == 0:
-        print(
-            "[!] raw.cotacoes está vazia. Provavelmente não há Parquet no "
-            "bucket ainda. Rode `python -m ingestion.main --modo inicial` "
-            "antes de explorar o warehouse."
-        )
+        print("    [!] vazia — rode `python -m ingestion.main --modo inicial`.")
         return
 
-    tickers_distintos = con.execute(
-        "SELECT COUNT(DISTINCT ticker) FROM raw.cotacoes"
-    ).fetchone()[0]
+    tickers = con.execute("SELECT COUNT(DISTINCT ticker) FROM raw.cotacoes").fetchone()[0]
     data_min, data_max = con.execute(
         "SELECT MIN(data), MAX(data) FROM raw.cotacoes"
     ).fetchone()
+    print(f"    Linhas:  {total:,}")
+    print(f"    Tickers: {tickers}")
+    print(f"    Datas:   {data_min} a {data_max}")
 
-    print("=" * 60)
-    print("Warehouse DuckDB pronto.")
-    print(f"  Arquivo:           {CAMINHO_WAREHOUSE}")
-    print(f"  View:              raw.cotacoes")
-    print(f"  Linhas totais:     {total:,}")
-    print(f"  Tickers distintos: {tickers_distintos}")
-    print(f"  Datas:             {data_min} a {data_max}")
-    print("=" * 60)
+
+def _resumir_dividendos(con: duckdb.DuckDBPyConnection) -> None:
+    """Resumo de raw.dividendos (proventos, tickers, range de datas-ex)."""
+    print("\n  raw.dividendos (dividendos — partição por ano)")
+    try:
+        total = con.execute("SELECT COUNT(*) FROM raw.dividendos").fetchone()[0]
+    except duckdb.IOException:
+        total = 0
+    if total == 0:
+        print(
+            "    [!] vazia — rode `python -m ingestion.dividendos.main --modo inicial`."
+        )
+        return
+
+    tickers = con.execute(
+        "SELECT COUNT(DISTINCT ticker) FROM raw.dividendos"
+    ).fetchone()[0]
+    data_min, data_max = con.execute(
+        "SELECT MIN(data_ex), MAX(data_ex) FROM raw.dividendos"
+    ).fetchone()
+    print(f"    Proventos: {total:,}")
+    print(f"    Tickers:   {tickers}")
+    print(f"    Datas-ex:  {data_min} a {data_max}")
 
 
 def main() -> int:

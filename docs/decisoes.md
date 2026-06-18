@@ -461,3 +461,124 @@ Natural keys (`ticker`, `data`) **preservadas** nas dimensões como atributos.
 - **`override=False` é exatamente o desired behavior.** Variáveis injetadas pelo orquestrador (Compose) vencem variáveis vindas de arquivo (`.env`). Esse é o padrão em qualquer stack de produção: secrets de vault > config file local.
 
 **Trade-off aceito.** Documentar a diferença em três lugares (`.env.example`, `airflow/README.md`, `docs/decisoes.md`). É a fonte mais comum de "funciona na minha máquina mas falha no container" — o custo do documento é menor que o custo de redescobrir.
+
+---
+
+## 2026-06-11 — Etapa 6 — Escopo: indicadores de mercado + dividend yield, sem fundamentalistas
+
+**Contexto.** A Etapa 6 calcula indicadores financeiros. O leque possível vai de indicadores de **mercado** (retorno, volatilidade, drawdown — derivados só de preço e volume) a **fundamentalistas** (P/L, P/VP, ROE, dividend yield, payout — que exigem dados contábeis: lucro, patrimônio líquido, número de ações). O yfinance entrega preço e proventos de forma confiável, mas dados fundamentalistas de empresas brasileiras vêm incompletos, defasados ou ausentes.
+
+**Decisão.** Escopo da etapa = **indicadores de mercado** (retorno simples/log/acumulado, médias móveis, volatilidade, drawdown) **+ dividend yield** (único "fundamentalista" viável, porque depende só de proventos + preço, ambos confiáveis no yfinance). P/L, P/VP, ROE, payout e afins ficam **fora**.
+
+**Racional.**
+- **Confiabilidade da fonte manda no escopo.** Calcular P/L com lucro por ação faltando ou errado produziria um indicador bonito e mentiroso. Melhor não ter do que ter errado.
+- **DY é a ponte honesta.** Proventos (`yf.Ticker.dividends`) e preço são exatamente o que o yfinance faz bem. DY entrega o "sabor fundamentalista" sem depender de demonstração contábil.
+- **Indicadores de mercado são autossuficientes.** Dependem só da fato de cotações, que já está validada (Etapa 4).
+
+**Trade-off aceito.** O dashboard (Etapa 7) não terá análise fundamentalista clássica. Em entrevista, é uma escolha defensável ("limitação consciente da fonte gratuita; com uma API paga — B3/CVM, Refinitiv — eu adicionaria a camada fundamentalista sem mudar a arquitetura, só a ingestão").
+
+---
+
+## 2026-06-11 — Etapa 6 — Retorno simples E log, lado a lado
+
+**Contexto.** Há duas definições usuais de retorno diário: **simples** (`P_t / P_{t-1} - 1`) e **logarítmico** (`ln(P_t / P_{t-1})`). Poderia guardar só um. Cada um tem um domínio onde é o "certo".
+
+**Decisão.** Calcular e materializar **os dois** em `mart_indicadores_diarios`.
+
+**Racional.**
+- **Log é aditivo no tempo.** A soma de retornos log de N dias é o retorno log do período — propriedade que torna o desvio-padrão de retornos log a base correta da **volatilidade** e da anualização por √252. Por isso a volatilidade desta etapa usa `retorno_log`.
+- **Simples é intuitivo e compõe entre ativos.** "Subiu 2%" é retorno simples; é o que se reporta e o que se usa para média de carteira num dia.
+- **Custo de manter os dois é nulo.** Duas colunas a mais sobre o mesmo `LAG`. Guardar só log forçaria o dashboard a reconverter (`exp(x) - 1`) a cada leitura.
+
+**Trade-off aceito.** Duas colunas semanticamente próximas podem confundir quem não conhece a distinção — mitigado pela descrição explícita em `schema.yml` (log = base de volatilidade; simples = variação reportável).
+
+---
+
+## 2026-06-11 — Etapa 6 — Base de preço: ajustado para retorno/risco, bruto para yield
+
+**Contexto.** A fato de cotações guarda `fechamento` (bruto) e `fechamento_ajustado` (ajustado por proventos e splits) lado a lado (decisão da Etapa 1). Todo indicador da etapa precisa escolher uma base — e a escolha **errada** distorce o número de forma silenciosa.
+
+**Decisão.** Regra que atravessa toda a etapa:
+- **Retorno, retorno acumulado, médias móveis, volatilidade, drawdown → fechamento AJUSTADO.**
+- **Dividend yield → fechamento BRUTO no denominador.**
+
+**Racional.**
+- **Ajustado evita risco fantasma.** Numa data-ex, o preço bruto cai pelo valor do provento. Medir retorno/volatilidade sobre o bruto registraria essa queda como "perda" e "risco" que o investidor (que recebeu o dividendo) não sofreu. O ajustado já incorpora o provento — a série fica contínua.
+- **Yield sobre bruto evita contar o dividendo duas vezes.** O ajustado já *desconta* proventos do preço. Usar ajustado no denominador do yield seria dividir o dividendo por um preço que já foi reduzido por causa daquele dividendo — dupla contagem, yield inflado. O yield de mercado é "provento / preço que o mercado pratica" = preço bruto.
+
+**Trade-off aceito.** Exige disciplina: a base certa muda por indicador dentro do mesmo modelo. Mitigado documentando a regra no topo de cada `.sql`, em cada coluna do `schema.yml`, e aqui. É o tipo de detalhe que separa "sei usar window function" de "entendo o dado".
+
+---
+
+## 2026-06-11 — Etapa 6 — Médias móveis 7/30/90/200 com contagem de pregões (janela parcial sinalizada)
+
+**Contexto.** Médias móveis precisam de duas decisões: (a) **quais janelas** (em pregões); (b) **o que fazer no início da série**, quando ainda não há N pregões para preencher a janela. Para (b), as opções são: deixar NULL até completar N (Forma B), ou calcular com o que houver e **sinalizar** quantos pregões entraram (Forma A).
+
+**Decisão.** Janelas de **7, 30, 90 e 200 pregões** (curtíssimo, mensal, trimestral, anual operacional). Início de série: **Forma A** — calcular a média com os pregões disponíveis e expor `pregoes_janela_Nd = COUNT(*)` na mesma janela, que vale N quando a janela está cheia e < N quando é parcial.
+
+**Racional.**
+- **7/30/90/200 cobrem horizontes distintos.** 200 pregões ≈ um ano útil de bolsa; é a média móvel "longa" clássica em análise técnica.
+- **Forma A não joga dado fora.** Os primeiros 199 pregões teriam média 200d NULL na Forma B. A Forma A entrega um número desde o pregão 1, e a coluna de contagem deixa o consumidor decidir se confia (filtrar `pregoes_janela_200d = 200` se quiser só janela cheia).
+- **Contagem é autoexplicativa.** `COUNT(*) OVER (mesma janela)` é barato e elimina a pergunta "essa média de 200 dias tem mesmo 200 dias?".
+
+**Trade-off aceito.** Quem consumir a média sem olhar a contagem pode tratar uma média parcial como cheia. Mitigado pela coluna explícita e pela documentação; a alternativa (NULL) seria mais "segura" mas esconderia informação útil.
+
+---
+
+## 2026-06-11 — Etapa 6 — Volatilidade amostral, anualizada por √252
+
+**Contexto.** Volatilidade = desvio-padrão dos retornos. Três decisões: (a) desvio-padrão **amostral** (`STDDEV_SAMP`, divide por n-1) ou **populacional** (`STDDEV_POP`, divide por n); (b) sobre qual retorno; (c) reportar diária ou **anualizada**.
+
+**Decisão.** **Amostral** (`STDDEV_SAMP`) sobre **retorno log**, janelas de 30/90/252 pregões, exposta nas duas formas: diária e **anualizada por √252** (`σ_anual = σ_diário × √252`).
+
+**Racional.**
+- **Amostral é o padrão em finanças.** A série de retornos é uma *amostra* do processo gerador, não a população inteira. n-1 (correção de Bessel) é a convenção de mercado e do que ferramentas como `numpy.std(ddof=1)`/Excel `STDEV.S` assumem.
+- **√252 porque variância escala linearmente no tempo** (retornos log ~i.i.d.): variância de 252 dias = 252 × variância diária, logo desvio = √252 × diário. 252 ≈ pregões/ano na B3.
+- **252d como janela "anual".** Volatilidade de 30/90/252 dá leitura de curto, médio e ciclo anual.
+
+**Trade-off aceito.** A independência dos retornos (premissa do √252) é aproximação — há autocorrelação e clustering de volatilidade reais. Para o nível do projeto, a anualização padrão é suficiente e é o que se espera ver; modelos GARCH etc. seriam sobre-engenharia aqui.
+
+---
+
+## 2026-06-11 — Etapa 6 — Dividendos particionados por ano; fato_dividendos conformada
+
+**Contexto.** A ingestão de dividendos espelha a de cotações, mas proventos são **esparsos**: cada ticker paga poucos eventos por ano. Particionar por dia (como cotações) geraria centenas de objetos quase vazios. Há também a decisão de modelagem: como a fato de dividendos se relaciona com as dimensões existentes.
+
+**Decisão.** Raw de dividendos particionado **por ano** (`raw/dividendos/ano=YYYY/dividendos.parquet`, todos os tickers juntos). `fato_dividendos` (grão: ticker × data-ex) reusa as **dimensões conformadas** `dim_empresa` e `dim_tempo` — as mesmas da fato de cotações. Ingestão em subpacote `ingestion/dividendos/`, com entry point próprio (`python -m ingestion.dividendos.main`, modos inicial/incremental).
+
+**Racional.**
+- **Partição por ano casa com a cardinalidade.** Poucos eventos/ano → um arquivo/ano é o tamanho certo; evita o anti-padrão de micro-arquivos sem perder partition pruning por ano.
+- **Dimensões conformadas são o ponto do Kimball.** Reusar `dim_tempo` é o que permite, no `mart_dividend_yield`, alinhar proventos e preços pelo **mesmo** calendário (fact-to-fact via dimensão de tempo).
+- **Subpacote mantém simetria sem acoplar.** `ingestion/dividendos/download.py` lê ao lado de `ingestion/download.py`; o código de cotações (consumido pela DAG da Etapa 5) não é tocado. Config e cliente S3 são compartilhados (`ingestion.config`, `ingestion.s3_client`), sem duplicar credenciais. CLI própria porque os modos de cotações (por data) não fazem sentido para dividendos (por ano).
+
+**Trade-off aceito.** Dois fluxos de ingestão para manter. Aceitável: a simetria os deixa parecidos, e a fronteira (fonte e granularidade de partição diferentes) é real, não acidental.
+
+---
+
+## 2026-06-11 — Etapa 6 — Dividend yield trailing 12 meses sobre preço bruto, via range join
+
+**Contexto.** O DY de 12 meses pode ser pontual (só "hoje") ou diário (recalculado a cada pregão, com janela de 365 dias deslizante). E o cálculo da soma móvel de proventos pode ser feito com window `RANGE BETWEEN INTERVAL` ou com self-join por faixa de data.
+
+**Decisão.** DY **trailing 12m, grão diário**: para cada pregão, soma dos proventos com data-ex em `(data - 365, data]` dividido pelo fechamento **bruto** daquele dia. Implementado com **range join** (self-join por faixa) entre cotações e dividendos. Onde não há provento na janela, `dy_12m = 0` (não NULL).
+
+**Racional.**
+- **Grão diário permite a série temporal do yield.** O yield muda todo dia (janela desliza, preço muda); guardar só "hoje" perderia o gráfico de evolução, que é justamente o que um dashboard de DY mostra.
+- **Range join é robusto e explícito.** A condição `data_ex > data - 365 AND data_ex <= data` deixa a semântica do intervalo visível na cláusula `ON`, e não exige que a data-ex coincida com um pregão (o que a versão `RANGE` window assumiria). Como dividendos são pouquíssimos, o custo do range join é desprezível.
+- **0, não NULL, para ausência de provento.** "Não pagou dividendo nos últimos 12 meses" é um fato conhecido (yield zero), não um valor desconhecido. NULL contaminaria médias e gráficos.
+
+**Trade-off aceito.** Range join é O(pregões × proventos por ticker) — irrelevante aqui (proventos minúsculos), mas em volume muito maior a versão `SUM() OVER (RANGE ...)` seria mais escalável. Documentado no `.sql` como a alternativa caso o volume cresça.
+
+---
+
+## 2026-06-11 — Etapa 6 — Materialização: marts pesados como table, fato_dividendos como view
+
+**Contexto.** A Etapa 4 fixou "staging = view, marts = table". A Etapa 6 adiciona quatro modelos com perfis de custo diferentes: três pesados (indicadores diários, resumo, dividend yield diário) e um leve (fato de dividendos).
+
+**Decisão.** `mart_indicadores_diarios`, `mart_indicadores_resumo` e `mart_dividend_yield` como **table**; `fato_dividendos` como **view** (exceção consciente ao default de marts).
+
+**Racional.**
+- **Tables onde a leitura é repetida e o cálculo não é trivial.** Os indicadores diários têm dezenas de window functions; o dividend yield tem range join. O dashboard (Etapa 7) lerá esses marts muitas vezes — materializar paga o cálculo uma vez.
+- **View para `fato_dividendos` porque é ínfima.** Poucas dezenas de proventos por ticker; o JOIN com as dims é instantâneo. Materializar não traria ganho de latência e a view ganha freshness automática quando uma nova partição de ano chega.
+- **Coerência com a Etapa 4.** Mantém o princípio (pesado/relido → table) e abre exceção apenas onde o custo justifica, documentando o porquê.
+
+**Trade-off aceito.** `fato_dividendos` como view foge da regra "marts = table" — alguém lendo o `dbt_project.yml` poderia estranhar. Mitigado pelo `{{ config(materialized='view') }}` explícito no modelo e por esta entrada.

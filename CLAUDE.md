@@ -156,6 +156,8 @@ Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a m
 
 **Etapa 5 — Airflow:** compose único `docker-compose.yml` (renomeado de `docker-compose.minio.yml`); imagem custom `airflow/Dockerfile` (apache/airflow:2.10.5 + `requirements.txt`); DAG `pipeline_b3_diario` com 4 BashOperator (`extract_cotacoes` → `refresh_warehouse` → `dbt_run` → `dbt_test`); schedule `0 20 * * *` em `America/Sao_Paulo`, `catchup=False`, `retries=2` (5min); projeto bind-montado em `/opt/project`; dentro do container `MINIO_ENDPOINT=http://minio:9000` (host segue com `localhost:9000`).
 
+**Etapa 6 — Indicadores:** ingestão de dividendos (`ingestion/dividendos/`, partição por ano `raw/dividendos/ano=YYYY/`, CLI `--modo inicial|incremental`, reusa `ingestion.s3_client`); marts `mart_indicadores_diarios` (retorno simples/log/acumulado, médias móveis 7/30/90/200 com contagem, volatilidade 30/90/252 amostral anualizada √252, drawdown — base **fechamento ajustado**) + `mart_indicadores_resumo` (1 linha/ticker) + `fato_dividendos` (view, dims conformadas) + `mart_dividend_yield` (DY trailing 12m sobre **fechamento bruto**, range join); 4 custom tests novos; fundamentalistas (P/L, P/VP, ROE) fora por limitação do yfinance.
+
 ### Convenções de validação
 
 - Idempotência semântica validada empiricamente em cada etapa que toca storage. Script reutilizável em `scripts/validar_idempotencia.py`.

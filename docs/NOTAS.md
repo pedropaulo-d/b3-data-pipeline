@@ -463,17 +463,140 @@ dos schemas, latência de cold start do httpfs vs warm cache)
 
 ## Etapa 6 — Indicadores e métricas financeiras
 
-**Início:** —
-**Fim:** —
+**Início:** 2026-06-11
+**Fim:** 2026-06-12
 
 ### Conceitos
-(em branco até começar)
+
+- **Retorno simples vs logarítmico.** Simples = `P_t/P_{t-1} - 1`;
+  log = `ln(P_t/P_{t-1})`. O log é **aditivo no tempo** (somar os logs
+  diários dá o log do período), o que o torna a base natural para
+  volatilidade e qualquer agregação temporal. O simples é melhor para
+  **agregar entre ativos** (retorno de uma carteira é a média ponderada
+  dos retornos simples) e para comunicar a leigos. Por isso o mart
+  expõe os dois.
+
+- **Preço ajustado para retorno/risco, bruto para dividend yield.** O
+  fechamento ajustado já desconta proventos (reinveste dividendos no
+  preço), então é o correto para medir retorno total e volatilidade. Mas
+  usá-lo no dividend yield **contaria o provento duas vezes** — o ajuste
+  já embutiu o dividendo no preço, e o yield voltaria a somá-lo no
+  numerador. Por isso o DY usa fechamento **bruto** no denominador.
+
+- **Volatilidade = desvio-padrão dos retornos, anualizada por √252.**
+  A variância escala **linear** no tempo (variância de N dias = N ×
+  variância diária, sob i.i.d.), logo a volatilidade — que é a raiz —
+  escala por **√N**. Com ~252 pregões por ano, anualiza-se multiplicando
+  por √252. Uso desvio-padrão **amostral (N-1)** porque estimo a partir
+  de uma amostra, não da população inteira.
+
+- **Drawdown = queda desde o pico histórico.** Para cada pregão,
+  `drawdown = preço/MAX(preço até aqui) - 1`, com o pico calculado por
+  frame expansivo `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. É
+  sempre ≤ 0 (no topo histórico vale 0). O **max drawdown** é o pior
+  valor da série — a maior perda que um investidor que comprou no topo
+  teria amargado.
+
+- **Médias móveis contam pregões, não dias corridos.** A janela `ROWS
+  BETWEEN 29 PRECEDING AND CURRENT ROW` pega 30 **linhas** (pregões),
+  não 30 dias de calendário — fim de semana e feriado não entram. Nos
+  primeiros N-1 pregões a janela é **parcial** (não há 30 pregões
+  anteriores ainda); sinalizo isso com uma coluna de **contagem**
+  (`pregoes_janela_Nd`) em vez de descartar as linhas — é a "Forma A".
+
+- **Range join para a janela trailing de 365 dias.** O dividend yield
+  soma dividendos dos últimos 365 dias **corridos**. Como a data-ex de
+  um provento raramente cai num pregão, não dá para usar frame `ROWS`;
+  uso um self-join por intervalo (`d.data BETWEEN c.data - 365 AND
+  c.data`). Robusto a datas que não existem na série de cotações.
+
+- **Window function não referencia outra no mesmo SELECT.** Não dá para
+  fazer `AVG(retorno) OVER (...)` se `retorno` é ele próprio uma window
+  na mesma camada — o SQL avalia todas as windows do SELECT "ao mesmo
+  tempo". A solução é encadear CTEs: uma camada calcula o retorno, a
+  seguinte calcula a média móvel sobre ele.
+
+- **Named windows com frame estendido.** `WINDOW w AS (PARTITION BY ...
+  ORDER BY ...)` declara a janela uma vez; cada uso pode estender o
+  frame: `AVG(...) OVER (w ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)`.
+  Evita repetir `PARTITION BY ... ORDER BY ...` em cada indicador.
+
+- **Dimensões conformadas.** `dim_empresa` e `dim_tempo` servem **tanto**
+  `fato_cotacoes_diarias` quanto `fato_dividendos`. Uma dimensão
+  conformada é compartilhada por múltiplas fatos com o mesmo significado
+  — é o que permite cruzar as duas fatos pela mesma chave.
+
+- **Fact-to-fact join via dimensão.** O `mart_dividend_yield` cruza
+  duas fatos (cotações × dividendos). Não se faz join direto fato-fato;
+  o caminho correto é via a dimensão conformada (`dim_tempo` /
+  `empresa_id`), que garante o grão e evita produto cartesiano.
 
 ### Dúvidas
-(em branco até começar)
+
+- **Por que o `dividendos_12m` do yfinance diverge das fontes?** O
+  yfinance deu R$2,97 contra ~R$3,69 de algumas fontes. Suspeita: JCP
+  não totalmente capturado, ou proventos recentes fora da janela de 365
+  dias exatos. Investigar a composição de `yf.Ticker().dividends`.
+
+- **Quando migrar o range join para `SUM() OVER (RANGE INTERVAL)`?** O
+  `mart_dividend_yield` tem grão diário (7488 linhas) e o self-join por
+  intervalo é barato nesse volume. Mas se o dataset crescer muito, o
+  range join pode ficar caro — em que ponto vale trocar pela window com
+  frame `RANGE INTERVAL`?
+
+- **`arg_max` do DuckDB tem equivalente portável?** Usei `arg_max` para
+  pegar o valor de uma coluna no máximo de outra. Em Postgres/BigQuery o
+  equivalente é `(ARRAY_AGG(x ORDER BY y DESC))[1]` ou
+  `FIRST_VALUE(... ORDER BY ...)` — confirmar antes de citar em
+  entrevista que é específico do DuckDB.
+
+- **√252 assume retornos i.i.d.** A anualização por √252 pressupõe
+  retornos independentes e identicamente distribuídos. Na prática há
+  autocorrelação e volatility clustering. Quão ruim é a aproximação para
+  um horizonte de portfólio? (É a convenção de mercado mesmo sabendo da
+  imperfeição.)
+
+- **Indicador de "dias para recuperar do drawdown"?** Tempo "debaixo
+  d'água" (do pico até reconquistar o pico) seria a evolução natural do
+  drawdown. Ficou fora do escopo — vale a pena adicionar?
 
 ### Descobertas
-(em branco até começar)
+
+- **Dividendos desde 2005, cotações só desde 2021 — assimetria
+  vantajosa.** O yfinance retornou 793 proventos de 2005 a 2026, mas as
+  cotações cobrem só 2021+. Isso **não** é problema: o
+  `mart_dividend_yield` parte das cotações (INNER JOIN), então só calcula
+  yield onde há preço. E é uma vantagem acidental: o DY trailing 12m dos
+  primeiros pregões de 2021 já tem **janela completa**, porque os
+  dividendos de 2020 existem no raw. Sem isso, os primeiros ~12 meses de
+  yield seriam subestimados por falta de proventos anteriores.
+
+- **Dividend yield validado contra o mercado.** O DY 12m calculado para
+  PETR4 (pregão de 2026-06-11) deu **7,11%**. Fontes de mercado
+  (Investidor10 7,67%, stockinvest 7,24%, Investing 6,5–6,9%) confirmam a
+  mesma ordem de grandeza. A pequena diferença vem de: (a) data de corte
+  do preço no denominador, (b) escopo de proventos — possível diferença
+  no tratamento de JCP pelo yfinance vs as fontes, (c) janela de 365 dias
+  corridos vs 12 meses-calendário. Lição: validar cálculo financeiro
+  contra fonte externa é mais forte que confiar só em testes de
+  invariante.
+
+- **`dividendos_12m` do yfinance (R$2,97) menor que algumas fontes
+  (R$3,69).** Diferença a investigar: provável que o yfinance não capture
+  todo o JCP, ou que proventos muito recentes não tenham entrado na
+  janela de 365 dias exatos. Registrado como diferença conhecida, não
+  bug.
+
+- **Volatilidade reage a choques na janela.** A volatilidade anualizada
+  de 30d da PETR4 saltou de ~35% para ~47% exatamente quando um retorno
+  diário de -10,5% (03/06/2026) entrou na janela de 30 pregões. Confirma
+  que a janela móvel captura eventos como esperado.
+
+- **Window nomeada com frame estendido funciona no DuckDB 1.10.1.** A
+  sintaxe `WINDOW w AS (PARTITION BY ... ORDER BY ...)` com
+  `OVER (w ROWS BETWEEN N PRECEDING AND CURRENT ROW)` nos modelos
+  compilou e rodou sem erro. Era o ponto de maior risco de sintaxe da
+  etapa.
 
 ---
 

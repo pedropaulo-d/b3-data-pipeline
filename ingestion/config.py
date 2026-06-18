@@ -89,6 +89,11 @@ MINIO_REGION: str = os.environ.get("MINIO_REGION", "us-east-1")
 # entram em etapas seguintes; aqui só registramos a convenção.
 RAW_PREFIX: str = "raw/cotacoes"
 
+# Prefixo do raw layer de dividendos (Etapa 6). Particionado por ANO, não
+# por dia: dividendos são esparsos (poucos eventos por ticker por ano), e
+# um arquivo por dia geraria centenas de objetos quase vazios.
+RAW_PREFIX_DIVIDENDOS: str = "raw/dividendos"
+
 
 # ---------------------------------------------------------------------------
 # Janela histórica
@@ -119,4 +124,12 @@ COLUNAS_SAIDA: list[str] = [
     "fechamento",
     "fechamento_ajustado",
     "volume",
+]
+
+# Ordem e nomes das colunas no Parquet de dividendos (Etapa 6).
+# Granularidade: 1 linha = 1 provento (ticker × data-ex).
+COLUNAS_DIVIDENDOS: list[str] = [
+    "data_ex",
+    "ticker",
+    "valor_dividendo",
 ]

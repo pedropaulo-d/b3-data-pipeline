@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 5 — Orquestração com Airflow ✅. Próxima: Indicadores e métricas financeiras.
+**Status atual:** Etapa 6 — Indicadores e métricas financeiras ✅. Próxima: Dashboard com Streamlit.
 
 ---
 
@@ -46,10 +46,15 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
                                                                 └──────────────┘
 ```
 
-> A partir da Etapa 2 o raw layer mora **exclusivamente no MinIO**
-> (`s3://b3-data/raw/cotacoes/...`). A pasta `data/raw/` no filesystem
-> é histórica da Etapa 1 — o `.gitkeep` é mantido para documentar a
-> convenção, mas nada é gravado lá.
+> A partir da Etapa 2 o raw layer mora **exclusivamente no MinIO**. Desde
+> a Etapa 6 são **duas fontes**: `raw/cotacoes/...` (particionada por dia)
+> e `raw/dividendos/...` (particionada por ano). A pasta `data/raw/` no
+> filesystem é histórica da Etapa 1 — o `.gitkeep` documenta a convenção,
+> mas nada é gravado lá.
+>
+> Na camada `marts` do dbt, além da estrela de cotações, a Etapa 6 adiciona
+> os marts de indicadores: `mart_indicadores_diarios`,
+> `mart_indicadores_resumo`, `fato_dividendos` e `mart_dividend_yield`.
 
 ---
 
@@ -76,8 +81,8 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 | 3     | Warehouse analítico com DuckDB      | ✅ Concluída   |
 | 4     | Transformações com dbt              | ✅ Concluída   |
 | 5     | Orquestração com Airflow (Docker)   | ✅ Concluída   |
-| 6     | Indicadores e métricas financeiras  | 🔜 Próxima     |
-| 7     | Dashboard com Streamlit             | ⏳ Pendente    |
+| 6     | Indicadores e métricas financeiras  | ✅ Concluída   |
+| 7     | Dashboard com Streamlit             | 🔜 Próxima     |
 | 8     | Polimento, documentação e portfólio | ⏳ Pendente    |
 
 ---
@@ -87,16 +92,18 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 ```
 b3-data-pipeline/
 ├── ingestion/                  # Scripts de download e persistência (Etapa 1+2)
+│   ├── dividendos/             # Ingestão de dividendos (Etapa 6)
+│   ├── s3_client.py            # Cliente boto3/MinIO compartilhado (cotações + dividendos)
 │   └── README.md
-├── warehouse/                  # Conexão e setup do DuckDB local (Etapa 3)
+├── warehouse/                  # Conexão e setup do DuckDB local (Etapa 3); views raw.cotacoes + raw.dividendos
 │   └── README.md
-├── dbt/                        # Projeto dbt (Etapa 4)
+├── dbt/                        # Projeto dbt (Etapas 4 e 6)
 │   ├── dbt_project.yml
 │   ├── profiles.yml            # Versionado conscientemente (credenciais via env_var)
 │   ├── packages.yml
 │   ├── seeds/empresas.csv
-│   ├── models/{staging,marts}/
-│   ├── tests/                  # Custom tests (regras de negócio)
+│   ├── models/{staging,marts}/ # marts: estrela de cotações + indicadores e dividend yield (Etapa 6)
+│   ├── tests/                  # Custom tests (regras de negócio; +4 na Etapa 6)
 │   └── README.md
 ├── sql/
 │   └── exploratoria/           # Queries .sql versionadas, executadas pelo notebook
@@ -278,6 +285,14 @@ As decisões de arquitetura e seus trade-offs estão documentadas em [`docs/deci
 20. **DAG de 4 tasks (`extract` → `refresh_warehouse` → `dbt run` → `dbt test`)** (Etapa 5) — uma task por etapa lógica do pipeline; retry e visibilidade na granularidade certa.
 21. **Schedule `0 20 * * *` America/Sao_Paulo, `catchup=False`** (Etapa 5) — pós-fechamento + ajustes do dia; sem backfill automático (yfinance não muda histórico retroativamente).
 22. **`MINIO_ENDPOINT=http://minio:9000` dentro do container, `localhost:9000` no host** (Etapa 5) — fonte mais comum de "funciona aqui, falha lá"; documentado em três lugares.
+23. **Escopo de indicadores: mercado + dividend yield** (Etapa 6) — fundamentalistas (P/L, P/VP, ROE) fora por limitação do yfinance; DY é o único viável (depende só de proventos + preço).
+24. **Retorno simples E log** (Etapa 6) — log é aditivo no tempo (base da volatilidade); simples é a variação reportável; manter os dois custa nada.
+25. **Base de preço: ajustado para retorno/risco, bruto para yield** (Etapa 6) — ajustado evita queda artificial em data-ex; bruto no denominador do DY evita contar o provento duas vezes.
+26. **Médias móveis 7/30/90/200 com contagem de pregões** (Etapa 6) — Forma A: calcula desde o 1º pregão e sinaliza janela parcial via `pregoes_janela_Nd`.
+27. **Volatilidade amostral, anualizada por √252** (Etapa 6) — `STDDEV_SAMP` sobre retorno log; √252 porque a variância escala linear no tempo.
+28. **Dividendos particionados por ano; `fato_dividendos` conformada** (Etapa 6) — proventos esparsos (1 arquivo/ano); reusa `dim_empresa`/`dim_tempo`; ingestão em subpacote `ingestion/dividendos/`.
+29. **DY trailing 12m sobre preço bruto, via range join** (Etapa 6) — grão diário (série do yield); 0 (não NULL) quando não há provento na janela de 365 dias.
+30. **Materialização Etapa 6: marts pesados como table, `fato_dividendos` como view** — indicadores/DY relidos pelo dashboard → table; fato de dividendos é ínfima → view.
 
 ---
 

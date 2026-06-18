@@ -47,3 +47,19 @@ sources:
               pregão sem negócios". Volume financeiro (R$) não é
               entregue pelo yfinance; calcular downstream como
               preço × quantidade se necessário.
+
+      - name: dividendos
+        description: >
+          Proventos por ticker, particionados por ano no MinIO
+          (`s3://b3-data/raw/dividendos/ano=YYYY/dividendos.parquet`).
+          Fonte: `yf.Ticker(t).dividends`. Partição por ano (não por dia)
+          porque dividendos são esparsos. Criada por
+          `python -m warehouse.setup`. Granularidade: 1 linha = 1 provento
+          (ticker × data-ex).
+        columns:
+          - name: data_ex
+            description: "Data-ex do provento (DATE) — dia a partir do qual a ação negocia sem direito ao dividendo."
+          - name: ticker
+            description: "Código de negociação na B3 (ex.: PETR4)."
+          - name: valor_dividendo
+            description: "Valor pago por ação naquela data-ex (DOUBLE, em R$)."

@@ -50,3 +50,32 @@ models:
           (semântica "yfinance não trouxe"); volume < 0 é proibido —
           coberto pelo custom test `fato_volume_nao_negativo` após o
           JOIN na fato.
+
+  - name: stg_dividendos
+    description: >
+      Staging 1:1 com raw.dividendos, com uma limpeza: descarta proventos
+      com `valor_dividendo` NULL ou <= 0 (sem valor analítico / ruído de
+      fonte). Materializada como view — re-execução barata, freshness
+      automática quando uma nova partição de ano chega no MinIO.
+    tests:
+      # Chave composta (ticker, data_ex) sem duplicatas: 1 provento por
+      # ticker por data-ex (granularidade declarada do raw de dividendos).
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - ticker
+            - data_ex
+    columns:
+      - name: data_ex
+        description: "Data-ex do provento (DATE)."
+        tests:
+          - not_null
+      - name: ticker
+        description: "Código de negociação na B3 (ex.: PETR4)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
+      - name: valor_dividendo
+        description: "Valor pago por ação na data-ex (DOUBLE, R$). Sempre > 0 após a limpeza."
+        tests:
+          - not_null
