@@ -9,7 +9,7 @@ A partir da Etapa 4, este mesmo arquivo é o destino dos modelos dbt
 ``raw`` e a view ``raw.cotacoes``; transformações vivem no dbt.
 """
 
-from warehouse.conexao import obter_conexao
+from warehouse.conexao import configurar_s3, obter_conexao
 from warehouse.setup import criar_schema_raw
 
-__all__ = ["obter_conexao", "criar_schema_raw"]
+__all__ = ["obter_conexao", "configurar_s3", "criar_schema_raw"]

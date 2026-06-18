@@ -606,7 +606,16 @@ dos schemas, latência de cold start do httpfs vs warm cache)
 **Fim:** —
 
 ### Conceitos
-(em branco até começar)
+
+- **Concorrência no DuckDB: 1 escritor exclusivo OU N leitores.** O
+  arquivo `.duckdb` admite ou um único processo em escrita, ou vários em
+  `read_only=True` simultâneos — não os dois. Por isso, antes de tocar no
+  dashboard, separei `obter_conexao` (só abre) de `configurar_s3` (setup
+  de object storage): o dashboard precisa abrir em `read_only=True` para
+  coexistir com outros leitores (e, no limite, não disputar o lock com a
+  DAG). Detalhe que surpreendeu: `LOAD httpfs` e `SET s3_*` rodam mesmo
+  numa conexão read-only — são estado de sessão, não mutação do arquivo.
+  Ver `docs/decisoes.md` (2026-06-18) e a dívida DT-5.1 (resolvida).
 
 ### Dúvidas
 (em branco até começar)

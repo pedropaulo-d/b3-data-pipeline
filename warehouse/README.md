@@ -4,7 +4,7 @@ Camada de **warehouse analítico local** do projeto. Equivalente, em escala de p
 
 ## O que mora aqui
 
-- `conexao.py` — função única `obter_conexao()` que abre o arquivo `warehouse.duckdb` na raiz do repo e configura o cliente S3 embutido do DuckDB para falar com o MinIO.
+- `conexao.py` — duas funções independentes: `obter_conexao(read_only)` **abre** o `warehouse.duckdb` na raiz do repo (escrita ou somente leitura), e `configurar_s3(con)` aplica `httpfs` + cliente S3 embutido para falar com o MinIO. Quem lê só marts locais dispensa a segunda; quem lê as views `raw.*` chama as duas.
 - `setup.py` — cria o schema `raw` e a view `raw.cotacoes`. Ponto de entrada via `python -m warehouse.setup`.
 
 O arquivo `warehouse.duckdb` em si **não é versionado** (ver `.gitignore`). Ele é regenerável: o estado de verdade vive no MinIO (raw) e nos modelos dbt (Etapa 4 em diante).

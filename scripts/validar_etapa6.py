@@ -117,14 +117,15 @@ def main() -> None:
     pd.set_option("display.width", None)
     pd.set_option("display.max_colwidth", None)
 
-    print(f"Abrindo {CAMINHO_WAREHOUSE} (validação Etapa 6, somente SELECTs)...")
+    print(f"Abrindo {CAMINHO_WAREHOUSE} (validação Etapa 6, somente leitura)...")
 
-    # As views raw/staging dependem de httpfs + credenciais S3; obter_conexao()
-    # herda esse setup. Não dá para abrir em read_only porque o setup faz SETs,
-    # então abrimos conexão normal e nos comprometemos a só rodar SELECTs.
+    # Todos os blocos leem apenas marts (tabelas locais materializadas pelo
+    # dbt) — nenhum toca nas views raw.*/staging do MinIO. Logo não há setup
+    # de S3 a fazer, e abrimos em read_only de verdade (coexiste com outros
+    # leitores, sem disputar o lock de escrita).
     from warehouse.conexao import obter_conexao
 
-    with obter_conexao(read_only=False) as con:
+    with obter_conexao(read_only=True) as con:
         for cabecalho, sql in BLOCOS:
             print(f"\n=== {cabecalho} ===")
             try:

@@ -20,9 +20,7 @@ Uso:
 
 from __future__ import annotations
 
-import duckdb
-
-from warehouse.conexao import CAMINHO_WAREHOUSE
+from warehouse.conexao import CAMINHO_WAREHOUSE, configurar_s3, obter_conexao
 
 
 def _imprimir(titulo: str, linhas: list[tuple]) -> None:
@@ -40,13 +38,13 @@ def main() -> None:
 
     print(f"Abrindo {CAMINHO_WAREHOUSE} (somente leitura)...")
 
-    # IMPORTANTE: a view raw.cotacoes depende de httpfs + credenciais S3.
-    # Reusamos obter_conexao() para herdar todo esse setup automaticamente.
-    # Mas em "somente leitura" o DuckDB recusa SETs — então abrimos uma
-    # conexão normal e nos comprometemos a só rodar SELECTs.
-    from warehouse.conexao import obter_conexao
-
-    with obter_conexao(read_only=False) as con:
+    # Abrimos em read_only de verdade: este script só faz SELECTs e pode
+    # coexistir com outros leitores sem disputar o lock de escrita.
+    # As views raw.cotacoes e staging.stg_cotacoes apontam para o MinIO,
+    # então ainda precisamos do setup de S3 — que roda mesmo em conexão
+    # read-only (LOAD/SET de S3 são estado de sessão, não tocam o arquivo).
+    with obter_conexao(read_only=True) as con:
+        configurar_s3(con)
         raw = con.execute(
             """
             SELECT

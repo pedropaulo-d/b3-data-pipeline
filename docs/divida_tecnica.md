@@ -11,18 +11,25 @@ gatilho de quando tratar. Ordenado por etapa de origem.
 
 ## Etapa 5 — Orquestração (Airflow)
 
-### DT-5.1 — `read_only=False` na conexão do DuckDB
-`scripts/checar_warehouse.py` (e o setup) abrem o DuckDB com
-`read_only=False`, acoplando setup de S3 (`httpfs`, credenciais) à
-abertura da conexão em `warehouse/conexao.py`. Funciona para um
-processo de cada vez, mas impede leitura concorrente.
+### DT-5.1 — `read_only=False` na conexão do DuckDB ✅ *resolvida*
+`scripts/checar_warehouse.py` (e o setup) abriam o DuckDB com
+`read_only=False`, acoplando o setup de S3 (`httpfs`, credenciais) à
+abertura da conexão em `warehouse/conexao.py`. Funcionava para um
+processo de cada vez, mas impedia leitura concorrente.
 
-- **Motivo do adiamento:** no fluxo atual (DAG sequencial + scripts
-  manuais) nunca há dois leitores simultâneos; resolver agora seria
-  YAGNI.
-- **Gatilho:** quando a Etapa 7 (dashboard Streamlit) exigir leitura
-  concorrente do `warehouse.duckdb` enquanto a DAG escreve — aí separar
-  conexão read-only do setup de escrita.
+- **Resolução (2026-06-18, Forma C):** `obter_conexao(read_only)` agora
+  **só abre** o arquivo; o setup de S3 saiu para uma função separada,
+  `configurar_s3(con)`. Quem só lê marts locais (`validar_etapa6`) abre
+  em `read_only=True` sem S3; quem lê as views `raw.*`/`staging`
+  (`checar_warehouse`) abre em `read_only=True` **e** chama
+  `configurar_s3` — descoberta empírica: `LOAD`/`SET` de S3 são estado de
+  sessão e rodam em conexão read-only (a premissa antiga de que "SET exige
+  read-write" não se confirmou no DuckDB do projeto). `setup.py` abre em
+  escrita (cria views) + `configurar_s3`. Habilita o dashboard da Etapa 7
+  a ler concorrentemente enquanto a DAG escreve.
+- **Trade-off aceito:** quem precisa de S3 faz duas chamadas
+  (`obter_conexao` + `configurar_s3`) em vez de uma. Ver
+  `docs/decisoes.md` (2026-06-18).
 
 ### DT-5.2 — `requirements` único arrasta deps de dev para a imagem ✅ *resolvida*
 A imagem do Airflow instalava o conjunto completo, trazendo `jupyter`,

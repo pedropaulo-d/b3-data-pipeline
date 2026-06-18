@@ -599,3 +599,25 @@ Natural keys (`ticker`, `data`) **preservadas** nas dimensões como atributos.
 **Trade-off aceito.** CVEs em ferramentas de dev deixam de ser sinalizados pelo CI — quem roda notebooks assume esse risco localmente. Aceitável para projeto de portfólio single-host: o dev é o próprio autor, e a superfície real (deploy) continua coberta.
 
 **Adendo (2026-06-18) — remoção do `requirements.lock`.** Fechando esta mesma rodada, o `requirements.lock` foi **removido** do repositório. Estava órfão (não usado no `airflow/Dockerfile` nem no CI) e desatualizado (gerado antes da separação, listava Jupyter e os 8 CVEs). Mantê-lo dava falsa sensação de reprodutibilidade sem consumidor real. A reprodutibilidade do build do Airflow já vem da imagem base `apache/airflow:2.10.5` (constraints próprias) + `requirements.txt`. Se um lock determinístico virar requisito no futuro, gerá-lo via constraints oficiais do Airflow (constraints-2.10.5), não por `pip freeze` de venv standalone (ver DT-SEC.1/DT-SEC.4).
+
+---
+
+## 2026-06-18 — Etapa 7 (preparação) — Separar `obter_conexao` (abertura) de `configurar_s3` (object storage), Forma C
+
+**Contexto.** `warehouse/conexao.py` tinha uma função única `obter_conexao()` que abria o `warehouse.duckdb` **e** rodava o setup de S3 (`INSTALL/LOAD httpfs`, `SET s3_*`). As duas responsabilidades estavam amarradas, e a crença era que o setup de S3 exigia abrir em `read_only=False`. Isso forçava escrita exclusiva mesmo para quem só lia, impedindo a leitura concorrente que o dashboard da Etapa 7 (Streamlit) precisa — DuckDB embarcado admite **1 escritor exclusivo OU N leitores** sobre o mesmo arquivo (dívida DT-5.1).
+
+**Decisão.** Quebrar em duas operações independentes (Forma C):
+- `obter_conexao(read_only=False)` — **só abre** o arquivo no modo pedido. Sem S3.
+- `configurar_s3(con)` — recebe uma conexão aberta e faz `httpfs` + `SET s3_*`, lendo as credenciais de `ingestion.config` (mesma fonte do boto3, sem duplicar).
+
+Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `configurar_s3` (cria as views `raw.*` que leem do MinIO); `scripts/checar_warehouse.py` abre em `read_only=True` + `configurar_s3` (lê `raw.cotacoes`/`staging`, que apontam para o MinIO); `scripts/validar_etapa6.py` abre em `read_only=True` **sem** S3 (só lê marts locais).
+
+**Racional.**
+- **Responsabilidade única.** Abrir o banco e configurar object storage são coisas diferentes; juntá-las obrigava todo leitor a pagar o setup de S3 e a abrir em escrita.
+- **Habilita read-only real.** Validação que só toca marts agora abre `read_only=True` e coexiste com outros leitores — base para o dashboard.
+- **Descoberta empírica que simplificou o desenho.** Testei: `LOAD httpfs` e `SET s3_*` **funcionam em conexão `read_only=True`** (são estado de sessão, não mutam o arquivo). A premissa registrada na DT-5.1 ("setup de S3 exige read-write") não se confirmou no DuckDB do projeto. Por isso `checar_warehouse`, mesmo lendo views sobre o MinIO, pôde virar read-only — não precisa de escrita só para configurar S3.
+
+**Trade-off aceito.** Quem precisa de S3 faz **duas chamadas** (`obter_conexao` + `configurar_s3`) em vez de uma. É o custo de desacoplar; mitigado por ambas serem uma linha e por `configurar_s3` ficar exportada em `warehouse/__init__.py`.
+
+**Nota sobre a instrução original.** O plano previa `checar_warehouse` em `read_only=True` **sem** `configurar_s3`, supondo que ele lia "só marts locais". Na verdade ele lê `raw.cotacoes` e `staging.stg_cotacoes` (views sobre o MinIO): sem `configurar_s3`, o DuckDB cai no endpoint padrão da AWS (`b3-data.s3.amazonaws.com`) em vez do MinIO. Mantida a leitura read-only (resolve a dívida), mas com `configurar_s3` — senão o script quebraria.
+

@@ -23,7 +23,7 @@ import sys
 import duckdb
 
 from ingestion.config import MINIO_BUCKET, RAW_PREFIX, RAW_PREFIX_DIVIDENDOS
-from warehouse.conexao import CAMINHO_WAREHOUSE, obter_conexao
+from warehouse.conexao import CAMINHO_WAREHOUSE, configurar_s3, obter_conexao
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,11 @@ def criar_schema_raw(con: duckdb.DuckDBPyConnection) -> None:
     exatamente igual a uma única execução.
 
     Args:
-        con: Conexão DuckDB obtida via :func:`warehouse.conexao.obter_conexao`.
-            Precisa estar com ``httpfs`` carregado e ``s3_*`` configurado
-            (ambos feitos por ``obter_conexao``).
+        con: Conexão DuckDB de escrita (via
+            :func:`warehouse.conexao.obter_conexao`) já com ``httpfs`` +
+            ``s3_*`` configurados por
+            :func:`warehouse.conexao.configurar_s3` — as views ``raw.*``
+            leem ``s3://`` do MinIO.
     """
     glob_cotacoes = _glob_raw_cotacoes()
     glob_dividendos = _glob_raw_dividendos()
@@ -161,7 +163,9 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # Escrita (cria schema/views) + S3 (as views raw.* leem do MinIO).
     con = obter_conexao(read_only=False)
+    configurar_s3(con)
     try:
         try:
             criar_schema_raw(con)

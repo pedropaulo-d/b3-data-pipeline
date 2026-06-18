@@ -1,12 +1,19 @@
-"""Conexão DuckDB persistente configurada para ler do MinIO.
+"""Conexão DuckDB persistente e configuração de acesso ao MinIO.
 
 O arquivo do banco (``warehouse.duckdb``) mora na raiz do repositório e
 é regenerável: o conteúdo "fonte" é o raw layer no MinIO, e o que vive
 dentro do .duckdb são apenas views e (a partir da Etapa 4) modelos dbt.
 
-Toda a configuração de S3 acontece em uma única função pública —
-:func:`obter_conexao` — para que notebooks, scripts e (no futuro) o
-adapter dbt-duckdb usem exatamente o mesmo setup.
+Duas responsabilidades **independentes**, em funções separadas:
+
+- :func:`obter_conexao` — apenas abre o ``warehouse.duckdb`` no modo
+  pedido (escrita ou somente leitura). Não toca em S3.
+- :func:`configurar_s3` — recebe uma conexão já aberta e instala/carrega
+  ``httpfs`` + configura o cliente S3 embutido para falar com o MinIO.
+
+Quem só lê tabelas/marts locais abre em ``read_only=True`` e dispensa o
+setup de S3. Quem lê as views ``raw.*`` (que apontam para o MinIO via
+``read_parquet('s3://...')``) chama ``configurar_s3`` depois de abrir.
 """
 
 import logging
@@ -63,39 +70,57 @@ def _normalizar_endpoint(endpoint: str) -> tuple[str, bool]:
 
 
 def obter_conexao(read_only: bool = False) -> duckdb.DuckDBPyConnection:
-    """Retorna conexão DuckDB persistente configurada para ler do MinIO.
+    """Abre o ``warehouse.duckdb`` no modo pedido. Não configura S3.
 
-    Faz, em uma única sessão:
-
-    - Abre (ou cria) o arquivo ``warehouse.duckdb`` na raiz do repo.
-    - Instala e carrega a extensão ``httpfs`` — sem ela o DuckDB não
-      consegue resolver chaves ``s3://``.
-    - Aplica as configurações de S3 necessárias para falar com o MinIO:
-      endpoint, credenciais, região, ``url_style='path'`` (obrigatório
-      em endpoint sem DNS wildcard, como ``localhost``) e SSL on/off
-      conforme o esquema do ``MINIO_ENDPOINT``.
+    Responsabilidade única: abrir (ou criar) o arquivo do banco. Para
+    ler as views ``raw.*`` (que apontam para o MinIO), chame
+    :func:`configurar_s3` na conexão retornada.
 
     Args:
-        read_only: Se ``True``, abre o arquivo em modo somente leitura.
-            Útil para notebooks de apresentação onde não queremos
-            mutar o estado por acidente. Default ``False`` para
-            permitir ``CREATE SCHEMA`` / ``CREATE VIEW``.
+        read_only: Se ``True``, abre em modo somente leitura — vários
+            leitores podem coexistir (ex.: o dashboard da Etapa 7 lendo
+            enquanto a DAG escreve). Se ``False`` (default), abre em
+            escrita exclusiva, necessário para ``CREATE SCHEMA`` /
+            ``CREATE VIEW`` / materializações do dbt.
 
     Returns:
-        Conexão DuckDB pronta para uso. Cabe ao chamador fechar com
+        Conexão DuckDB aberta. Cabe ao chamador fechar com
         ``con.close()`` ou usar em ``with``-statement.
+    """
+    logger.info(
+        "Abrindo warehouse DuckDB em %s (read_only=%s).",
+        CAMINHO_WAREHOUSE,
+        read_only,
+    )
+    return duckdb.connect(database=str(CAMINHO_WAREHOUSE), read_only=read_only)
+
+
+def configurar_s3(con: duckdb.DuckDBPyConnection) -> None:
+    """Configura ``httpfs`` + cliente S3 da conexão para falar com o MinIO.
+
+    Aplica, na conexão recebida:
+
+    - ``INSTALL httpfs`` / ``LOAD httpfs`` — sem a extensão o DuckDB não
+      resolve chaves ``s3://``.
+    - ``SET s3_*`` — endpoint, credenciais, região, ``url_style='path'``
+      (obrigatório em endpoint sem DNS wildcard, como ``localhost``) e
+      SSL on/off conforme o esquema do ``MINIO_ENDPOINT``.
+
+    As credenciais vêm de :mod:`ingestion.config` (mesma fonte do boto3
+    da ingestão) — não são duplicadas nem hardcodadas aqui.
+
+    Necessária só para quem lê as views ``raw.*``; quem consulta apenas
+    tabelas/marts locais pode dispensá-la. Funciona tanto em conexão de
+    escrita quanto de leitura: ``LOAD``/``SET`` de S3 são estado de
+    sessão, não mutação do arquivo, então rodam em ``read_only=True``
+    (verificado empiricamente no DuckDB do projeto).
+
+    Args:
+        con: Conexão aberta por :func:`obter_conexao`.
     """
     host_porta, use_ssl = _normalizar_endpoint(MINIO_ENDPOINT)
 
-    logger.info(
-        "Abrindo warehouse DuckDB em %s (read_only=%s); endpoint S3=%s (ssl=%s).",
-        CAMINHO_WAREHOUSE,
-        read_only,
-        host_porta,
-        use_ssl,
-    )
-
-    con = duckdb.connect(database=str(CAMINHO_WAREHOUSE), read_only=read_only)
+    logger.info("Configurando S3 na conexão; endpoint=%s (ssl=%s).", host_porta, use_ssl)
 
     # httpfs: extensão que adiciona suporte a s3://, gcs:// e https://.
     # `INSTALL` baixa o binário uma vez (cache em ~/.duckdb/extensions);
@@ -112,5 +137,3 @@ def obter_conexao(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     con.execute("SET s3_access_key_id = ?", [MINIO_ACCESS_KEY])
     con.execute("SET s3_secret_access_key = ?", [MINIO_SECRET_KEY])
     con.execute("SET s3_region = ?", [MINIO_REGION])
-
-    return con
