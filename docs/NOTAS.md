@@ -602,7 +602,7 @@ dos schemas, latência de cold start do httpfs vs warm cache)
 
 ## Etapa 7 — Dashboard com Streamlit
 
-**Início:** —
+**Início:** 2026-06-18
 **Fim:** —
 
 ### Conceitos
@@ -617,8 +617,42 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   numa conexão read-only — são estado de sessão, não mutação do arquivo.
   Ver `docs/decisoes.md` (2026-06-18) e a dívida DT-5.1 (resolvida).
 
+- **Streamlit reexecuta o script inteiro a cada interação.** Não é um
+  app orientado a eventos/callbacks: cada clique (trocar ticker, mexer no
+  período) roda `app.py` do topo ao fim de novo. Consequência prática: se
+  a conexão e as queries não fossem cacheadas, cada interação reabriria o
+  DuckDB e re-rodaria todo o SQL. Daí o par `@st.cache_resource` (recursos
+  vivos: conexão, aberta uma vez) e `@st.cache_data` (DataFrames: marts
+  estáticos na sessão, hash dos argumentos da query). Modelo mental
+  diferente de Flask/Dash — o "estado" vem do cache, não de variáveis
+  globais que sobrevivem entre requisições.
+
+- **`st.cache_resource` vs `st.cache_data`.** O primeiro guarda o objeto
+  como está (conexão, modelo, cliente) e o compartilha entre sessões — é
+  para coisas não serializáveis e caras de criar. O segundo guarda o
+  *retorno* (serializável: DataFrame, dict) e re-executa quando os
+  argumentos mudam. Conexão DuckDB → resource; resultado de query →
+  data. Misturar (cachear conexão como data) quebraria.
+
+- **Plotly trata NaN como lacuna naturalmente.** Os primeiros pregões têm
+  retorno/volatilidade NULL e médias com janela parcial. Mantive o NaN no
+  DataFrame (não preenchi com 0): `go.Scatter` simplesmente não desenha o
+  ponto, criando uma quebra na linha — que é a representação honesta de
+  "indicador ainda indefinido", em vez de um 0 enganoso.
+
 ### Dúvidas
-(em branco até começar)
+
+- O cache do Streamlit não invalida sozinho quando o `warehouse.duckdb` é
+  reescrito pela DAG. Numa sessão longa, o dashboard mostraria dados
+  velhos até alguém limpar o cache (ou `ttl`). Vale um `ttl` nas
+  `@st.cache_data`? Qual janela faz sentido para um warehouse que atualiza
+  1x/dia (schedule `0 20 * * *`)?
+
+- Read-only resolve coexistência entre leitores, mas se a DAG abre o banco
+  em escrita exclusiva durante o refresh, o dashboard falha ao abrir
+  naquele intervalo. Em produção real isso seria resolvido com um
+  warehouse servidor (Postgres/BigQuery) ou cópia/snapshot para leitura.
+  Onde está o limite do DuckDB embarcado como backend de dashboard?
 
 ### Descobertas
 (em branco até começar)

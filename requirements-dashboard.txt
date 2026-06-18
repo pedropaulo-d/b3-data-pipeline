@@ -1,0 +1,22 @@
+# ============================================================
+# Dependências do DASHBOARD (Etapa 7 — Streamlit)
+# ============================================================
+# Arquivo SEPARADO de propósito: o dashboard é uma aplicação deployável
+# por conta própria (ex.: Streamlit Cloud), com ciclo de vida distinto do
+# runtime do pipeline (ingestão/dbt/Airflow). Mantê-lo à parte permite
+# subir só o dashboard sem arrastar yfinance, boto3, dbt etc.
+#
+# Não é auditado pelo CI (que cobre apenas requirements.txt — superfície
+# de produção do pipeline). Para rodar localmente:
+#   pip install -r requirements-dashboard.txt
+#
+# duckdb/pandas/python-dotenv também aparecem no runtime, mas são
+# repetidos aqui porque um deploy isolado do dashboard precisa deles:
+# o dashboard importa `warehouse.conexao`, que importa `ingestion.config`
+# (python-dotenv), e lê os marts via DuckDB com pandas.
+
+streamlit>=1.32.0
+plotly>=5.20.0
+duckdb>=0.10.0
+pandas>=2.2.0
+python-dotenv>=1.0.0

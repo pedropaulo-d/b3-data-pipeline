@@ -158,6 +158,8 @@ Todas registradas em `docs/decisoes.md`. NÃO questionar em sessões futuras a m
 
 **Etapa 6 — Indicadores:** ingestão de dividendos (`ingestion/dividendos/`, partição por ano `raw/dividendos/ano=YYYY/`, CLI `--modo inicial|incremental`, reusa `ingestion.s3_client`); marts `mart_indicadores_diarios` (retorno simples/log/acumulado, médias móveis 7/30/90/200 com contagem, volatilidade 30/90/252 amostral anualizada √252, drawdown — base **fechamento ajustado**) + `mart_indicadores_resumo` (1 linha/ticker) + `fato_dividendos` (view, dims conformadas) + `mart_dividend_yield` (DY trailing 12m sobre **fechamento bruto**, range join); 4 custom tests novos; fundamentalistas (P/L, P/VP, ROE) fora por limitação do yfinance.
 
+**Etapa 7 — Dashboard:** `dashboard/` (Streamlit + Plotly), deployável à parte com `requirements-dashboard.txt` (fora do CI/runtime); lê SÓ marts via `obter_conexao(read_only=True)` sem S3; conexão `@st.cache_resource` + queries `@st.cache_data` parametrizadas; multi-aba (Aba 1 Visão Individual: seletor ticker/período, cartões `st.metric`, 5 gráficos Plotly; Aba 2 Comparação depois); falha de lock (escritor ativo) tratada com `st.error`.
+
 ### Convenções de validação
 
 - Idempotência semântica validada empiricamente em cada etapa que toca storage. Script reutilizável em `scripts/validar_idempotencia.py`.
@@ -173,17 +175,15 @@ b3-data-pipeline/
 ├── dbt/                    # Projeto dbt (Etapa 4); profiles.yml versionado
 ├── sql/exploratoria/       # SQL exploratório versionado
 ├── notebooks/              # Exploração e narrativa
+├── dashboard/              # Dashboard Streamlit + Plotly (Etapa 7)
 ├── data/raw/               # HISTÓRICO da Etapa 1; raw vive no MinIO
 ├── docs/                   # decisoes.md, NOTAS.md
 ├── airflow/                # Dockerfile, dags/, logs/, plugins/ (Etapa 5)
 ├── docker-compose.yml      # MinIO (Etapa 2) + Airflow (Etapa 5)
-├── .env.example            # Versionado
-├── .env                    # Gitignored
+├── .env(.example)          # .env gitignored; .env.example versionado
 ├── warehouse.duckdb        # Gitignored, regenerável via warehouse.setup
 └── requirements.txt
 ```
-
-Pasta futura: `dashboard/` (Etapa 7).
 
 ---
 

@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 6 — Indicadores e métricas financeiras ✅. Próxima: Dashboard com Streamlit.
+**Status atual:** Etapa 7 — Dashboard com Streamlit 🚧 em progresso (Aba 1 — Visão Individual pronta; Aba 2 — Comparação a seguir).
 
 ---
 
@@ -82,7 +82,7 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 | 4     | Transformações com dbt              | ✅ Concluída   |
 | 5     | Orquestração com Airflow (Docker)   | ✅ Concluída   |
 | 6     | Indicadores e métricas financeiras  | ✅ Concluída   |
-| 7     | Dashboard com Streamlit             | 🔜 Próxima     |
+| 7     | Dashboard com Streamlit             | 🚧 Em progresso |
 | 8     | Polimento, documentação e portfólio | ⏳ Pendente    |
 
 ---
@@ -114,6 +114,10 @@ b3-data-pipeline/
 │       └── .gitkeep
 ├── notebooks/                  # Exploração ad-hoc em Jupyter
 │   └── exploracao_etapa3.ipynb
+├── dashboard/                  # Dashboard Streamlit + Plotly (Etapa 7)
+│   ├── app.py                  # Entry point; abas e gráficos
+│   ├── data.py                 # Acesso a dados (read-only, cacheado)
+│   └── README.md
 ├── airflow/                    # Orquestração (Etapa 5)
 │   ├── Dockerfile              # Imagem custom (airflow + deps do projeto)
 │   ├── dags/pipeline_b3_diario.py
@@ -134,10 +138,11 @@ b3-data-pipeline/
 ├── README.md
 ├── CLAUDE.md                   # Diretrizes para sessões com Claude Code
 ├── requirements.txt            # RUNTIME do pipeline (>=; build do Airflow + auditado pelo CI)
-└── requirements-dev.txt        # Dev/exploração (Jupyter, plotly, pip-audit); não auditado pelo CI
+├── requirements-dev.txt        # Dev/exploração (Jupyter, plotly, pip-audit); não auditado pelo CI
+└── requirements-dashboard.txt  # Deps do dashboard (Streamlit; deployável à parte)
 ```
 
-> A pasta `dashboard/` ainda não existe — nasce na Etapa 7. O repositório evolui em camadas, não nasce pronto.
+> O repositório evolui em camadas, não nasce pronto: cada pasta apareceu na etapa que a exigiu.
 
 ---
 
@@ -203,6 +208,12 @@ dbt docs serve --profiles-dir ./ --port 8081   # 8080 está com o Airflow
 # Na UI (http://localhost:8080) localizar a DAG `pipeline_b3_diario`,
 # despausar e clicar em "Trigger DAG". As 4 tasks devem ficar verdes.
 # Detalhes em airflow/README.md.
+
+# 13. Etapa 7 — dashboard Streamlit (lê os marts, somente leitura).
+# Requer os marts já materializados (passo 11 ou a DAG). Da raiz do repo:
+pip install -r requirements-dashboard.txt
+streamlit run dashboard/app.py        # abre em http://localhost:8501
+# Detalhes e limitação de concorrência em dashboard/README.md.
 ```
 
 Para derrubar todos os serviços preservando os dados:

@@ -621,3 +621,20 @@ Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `conf
 
 **Nota sobre a instrução original.** O plano previa `checar_warehouse` em `read_only=True` **sem** `configurar_s3`, supondo que ele lia "só marts locais". Na verdade ele lê `raw.cotacoes` e `staging.stg_cotacoes` (views sobre o MinIO): sem `configurar_s3`, o DuckDB cai no endpoint padrão da AWS (`b3-data.s3.amazonaws.com`) em vez do MinIO. Mantida a leitura read-only (resolve a dívida), mas com `configurar_s3` — senão o script quebraria.
 
+---
+
+## 2026-06-18 — Etapa 7 — Dashboard Streamlit + Plotly (Aba 1: Visão Individual)
+
+**Contexto.** Camada de visualização sobre os marts da Etapa 6. Decisões de stack já fechadas (Streamlit + Plotly, multi-aba, filtro de período). Pontos a decidir: gestão de conexão sob o modelo de rerun do Streamlit, modo de abertura do DuckDB, e onde colocar as dependências.
+
+**Decisão.**
+- **Conexão read-only sem S3.** O dashboard lê só marts (tabelas materializadas, locais no `.duckdb`), então abre com `obter_conexao(read_only=True)` e **não** chama `configurar_s3` — não toca no MinIO. Aproveita a separação Forma C (entrada de 2026-06-18 sobre `obter_conexao`/`configurar_s3`).
+- **Cache espelhando o ciclo do Streamlit.** O Streamlit reexecuta o script a cada interação; a conexão fica em `@st.cache_resource` (aberta uma vez, reusada) e cada query em `@st.cache_data` (marts estáticos na sessão). Queries **parametrizadas** (placeholders `?`), não f-string com input.
+- **Dependências em `requirements-dashboard.txt` separado.** Nem `requirements.txt` (runtime do pipeline, auditado pelo CI) nem `requirements-dev.txt` (exploração): o dashboard é uma aplicação **deployável por conta própria** (ex.: Streamlit Cloud), com ciclo de vida distinto. Inclui `streamlit`, `plotly`, e repete `duckdb`/`pandas`/`python-dotenv` (o import de `warehouse.conexao` puxa `ingestion.config`, que usa dotenv) para o deploy isolado ser autossuficiente.
+- **Falha de lock tratada graciosamente.** DuckDB admite 1 escritor OU N leitores. Se a DAG/`dbt build` estiver escrevendo, abrir o dashboard falha no lock; capturamos `duckdb.Error` e mostramos `st.error` amigável + `st.stop()`, em vez de stack trace.
+
+**Racional.** Read-only resolve a coexistência com outros leitores e evita mutar estado por acidente. O cache é obrigatório dado o rerun-a-cada-clique do Streamlit — sem ele, cada interação reabriria o banco e re-rodaria SQL. Deps separadas mantêm a superfície de produção do pipeline enxuta e tornam o dashboard deployável isoladamente.
+
+**Trade-off aceito.** Três arquivos de dependências em vez de dois. Aceitável: cada um tem consumidor e ciclo de vida claros (CI / dev local / deploy do dashboard). O dashboard importar `ingestion.config` (que exige `MINIO_*` no import) é um acoplamento herdado — anotado no `dashboard/README.md` como ponto a resolver se o deploy remoto virar requisito.
+
+**Escopo.** Esta rodada entrega **só a Aba 1 (Visão Individual)**; a estrutura de `st.tabs` já reserva a Aba 2 (Comparação), implementada depois.
