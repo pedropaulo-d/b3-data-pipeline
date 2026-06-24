@@ -65,6 +65,21 @@ def intervalo_datas(ticker: str) -> tuple[dt.date, dt.date]:
 
 
 @st.cache_data
+def intervalo_serie() -> tuple[dt.date, dt.date]:
+    """(data_mínima, data_máxima) GLOBAL da série, sobre todos os tickers.
+
+    A Aba 2 (Comparação) tem um filtro de período próprio que vale para os
+    6 tickers de uma vez, então a janela é ancorada no intervalo global —
+    não no de um ticker específico (como faz :func:`intervalo_datas`).
+    """
+    con = obter_conexao_dashboard()
+    minimo, maximo = con.execute(
+        "SELECT MIN(data), MAX(data) FROM marts.mart_indicadores_diarios"
+    ).fetchone()
+    return minimo.date(), maximo.date()
+
+
+@st.cache_data
 def carregar_indicadores_diarios(
     ticker: str, data_inicio: dt.date, data_fim: dt.date
 ) -> pd.DataFrame:
@@ -142,3 +157,154 @@ def carregar_dy_atual(ticker: str) -> float | None:
         [ticker],
     ).fetchone()
     return None if linha is None else linha[0]
+
+
+# ===========================================================================
+# Aba 2 — Comparação entre tickers
+# ===========================================================================
+# Diferença conceitual em relação à Aba 1 (registrada em docs/NOTAS.md):
+# o `retorno_acumulado` do mart é medido desde o PRIMEIRO pregão da série
+# (≈2021); ele responde "quanto rendeu desde sempre". A Aba 2 compara
+# desempenho DENTRO da janela filtrada, então re-ancora o retorno no
+# primeiro pregão da JANELA (FIRST_VALUE sobre o conjunto já filtrado pelo
+# WHERE). Por isso estas queries recalculam — não leem retorno_acumulado
+# nem mart_indicadores_resumo (que é histórico, não da janela).
+
+
+@st.cache_data
+def carregar_retorno_comparado(
+    data_inicio: dt.date, data_fim: dt.date
+) -> pd.DataFrame:
+    """Série normalizada à base da janela, para os 6 tickers (long format).
+
+    Re-ancora cada ticker no seu primeiro pregão DENTRO da janela: o
+    ``FIRST_VALUE(...) OVER (PARTITION BY empresa_id ORDER BY data)`` é
+    avaliado DEPOIS do ``WHERE`` (ordem de execução do SQL), então a base
+    é o preço do primeiro dia filtrado — não o de 2021.
+
+    Devolve as duas leituras equivalentes da mesma normalização, e o app
+    escolhe qual plotar via toggle:
+
+    - ``retorno_janela`` — fração vs base (0.0 no 1º dia da janela);
+    - ``base_100`` — preço reescalado para começar em 100.
+
+    Base de preço: fechamento ajustado (regra de domínio dos retornos).
+    """
+    con = obter_conexao_dashboard()
+    return con.execute(
+        """
+        WITH normalizado AS (
+            SELECT
+                e.ticker,
+                d.data,
+                d.fechamento_ajustado
+                    / FIRST_VALUE(d.fechamento_ajustado) OVER (
+                          PARTITION BY d.empresa_id ORDER BY d.data
+                      ) AS fator
+            FROM marts.mart_indicadores_diarios AS d
+            INNER JOIN marts.dim_empresa AS e ON d.empresa_id = e.empresa_id
+            WHERE d.data BETWEEN ? AND ?
+        )
+        SELECT
+            ticker,
+            data,
+            fator - 1   AS retorno_janela,
+            fator * 100 AS base_100
+        FROM normalizado
+        ORDER BY ticker, data
+        """,
+        [data_inicio, data_fim],
+    ).fetchdf()
+
+
+@st.cache_data
+def carregar_risco_retorno_periodo(
+    data_inicio: dt.date, data_fim: dt.date
+) -> pd.DataFrame:
+    """Retorno e volatilidade DO PERÍODO, 1 linha por ticker (scatter).
+
+    Agrega ``mart_indicadores_diarios`` sobre a janela filtrada:
+
+    - ``retorno_periodo`` — preço do último pregão / preço do primeiro,
+      ambos da janela. ``arg_max``/``arg_min`` pegam o fechamento ajustado
+      na data máxima e mínima do grupo (mais limpo que FIRST/LAST_VALUE
+      num contexto de agregação).
+    - ``volatilidade_periodo`` — desvio-padrão amostral dos retornos log
+      diários na janela, anualizado (×√252). Recalculado sobre a janela:
+      a volatilidade do mart_resumo é a média das volatilidades de 30d ao
+      longo de toda a série, número diferente do "risco da janela".
+
+    Degrada graciosamente: ``STDDEV_SAMP`` exige ≥2 pontos; com 1 só
+    devolve NULL (NaN no DataFrame), que o Plotly simplesmente não plota.
+    """
+    con = obter_conexao_dashboard()
+    return con.execute(
+        """
+        SELECT
+            e.ticker,
+            arg_max(d.fechamento_ajustado, d.data)
+                / arg_min(d.fechamento_ajustado, d.data) - 1 AS retorno_periodo,
+            STDDEV_SAMP(d.retorno_log) * SQRT(252)           AS volatilidade_periodo
+        FROM marts.mart_indicadores_diarios AS d
+        INNER JOIN marts.dim_empresa AS e ON d.empresa_id = e.empresa_id
+        WHERE d.data BETWEEN ? AND ?
+        GROUP BY e.ticker
+        ORDER BY e.ticker
+        """,
+        [data_inicio, data_fim],
+    ).fetchdf()
+
+
+@st.cache_data
+def carregar_dy_atual_todos() -> pd.DataFrame:
+    """Dividend yield 12m do último pregão de cada ticker (ranking).
+
+    NÃO depende do filtro de período: é sempre o DY corrente.
+    ``arg_max(dy_12m, data)`` devolve o DY na data mais recente em que ele
+    está definido. Ordenado do maior para o menor (maior no topo do
+    gráfico de barras horizontais).
+    """
+    con = obter_conexao_dashboard()
+    return con.execute(
+        """
+        SELECT
+            e.ticker,
+            arg_max(y.dy_12m, y.data) AS dy_12m
+        FROM marts.mart_dividend_yield AS y
+        INNER JOIN marts.dim_empresa AS e ON y.empresa_id = e.empresa_id
+        GROUP BY e.ticker
+        ORDER BY dy_12m DESC NULLS LAST
+        """
+    ).fetchdf()
+
+
+@st.cache_data
+def carregar_tabela_comparativa() -> pd.DataFrame:
+    """Resumo canônico por ticker (histórico completo, NÃO filtrado).
+
+    Lê ``mart_indicadores_resumo`` (1 linha/ticker, agregado sobre TODA a
+    série), enriquecido com o nome da empresa (``dim_empresa``) e o DY
+    atual (subquery sobre ``mart_dividend_yield``). É a "ficha técnica"
+    histórica de cada ativo — independente do filtro de período da aba.
+    """
+    con = obter_conexao_dashboard()
+    return con.execute(
+        """
+        SELECT
+            r.ticker,
+            e.nome,
+            r.retorno_acumulado_total,
+            r.max_drawdown,
+            r.volatilidade_media_30d,
+            dy.dy_atual,
+            r.total_pregoes
+        FROM marts.mart_indicadores_resumo AS r
+        INNER JOIN marts.dim_empresa AS e ON r.empresa_id = e.empresa_id
+        LEFT JOIN (
+            SELECT empresa_id, arg_max(dy_12m, data) AS dy_atual
+            FROM marts.mart_dividend_yield
+            GROUP BY empresa_id
+        ) AS dy ON r.empresa_id = dy.empresa_id
+        ORDER BY r.ticker
+        """
+    ).fetchdf()

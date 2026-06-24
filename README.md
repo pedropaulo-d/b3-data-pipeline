@@ -2,7 +2,7 @@
 
 Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
 
-**Status atual:** Etapa 7 — Dashboard com Streamlit 🚧 em progresso (Aba 1 — Visão Individual pronta; Aba 2 — Comparação a seguir).
+**Status atual:** Etapa 7 — Dashboard com Streamlit ✅ concluída (Aba 1 — Visão Individual e Aba 2 — Comparação entre tickers). Próxima: Etapa 8 — Polimento e portfólio.
 
 ---
 
@@ -82,7 +82,7 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 | 4     | Transformações com dbt              | ✅ Concluída   |
 | 5     | Orquestração com Airflow (Docker)   | ✅ Concluída   |
 | 6     | Indicadores e métricas financeiras  | ✅ Concluída   |
-| 7     | Dashboard com Streamlit             | 🚧 Em progresso |
+| 7     | Dashboard com Streamlit             | ✅ Concluída   |
 | 8     | Polimento, documentação e portfólio | ⏳ Pendente    |
 
 ---

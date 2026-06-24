@@ -638,3 +638,23 @@ Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `conf
 **Trade-off aceito.** Três arquivos de dependências em vez de dois. Aceitável: cada um tem consumidor e ciclo de vida claros (CI / dev local / deploy do dashboard). O dashboard importar `ingestion.config` (que exige `MINIO_*` no import) é um acoplamento herdado — anotado no `dashboard/README.md` como ponto a resolver se o deploy remoto virar requisito.
 
 **Escopo.** Esta rodada entrega **só a Aba 1 (Visão Individual)**; a estrutura de `st.tabs` já reserva a Aba 2 (Comparação), implementada depois.
+
+---
+
+## 2026-06-24 — Etapa 7 — Dashboard, Aba 2 (Comparação entre tickers)
+
+**Contexto.** Segunda (e última) aba do dashboard: os 6 tickers lado a lado, sobre os mesmos marts read-only da Aba 1. O problema central é comparar séries de preço com magnitudes diferentes (PETR4 ~R$38, WEGE3 ~R$50, ITUB4 ~R$30): preço bruto sobreposto não diz nada sobre desempenho relativo. Pontos a decidir: como normalizar, sobre qual janela, e o que é "filtrável" vs "canônico".
+
+**Decisão.**
+- **Normalização à base da JANELA, não desde o início da série.** O gráfico de retorno comparado re-ancora cada ticker no seu primeiro pregão *dentro do período filtrado* (`FIRST_VALUE(fechamento_ajustado) OVER (PARTITION BY empresa_id ORDER BY data)`, avaliado depois do `WHERE` — ordem de execução do SQL). Assim o 1º dia da janela é a base (0% / 100) e a comparação responde "quem rendeu mais **neste período**", não "desde 2021". Isto difere do `retorno_acumulado` do mart (medido desde o 1º pregão da série), usado na Aba 1 e na tabela-resumo.
+- **Toggle base 100 ↔ retorno %.** A mesma normalização tem duas leituras equivalentes (`base_100 = fator × 100`; `retorno_janela = fator − 1`). Um `st.radio` alterna a coluna plotada, sem requery — as duas colunas vêm da mesma query.
+- **Scatter risco×retorno recalculado sobre a janela.** Volatilidade do período = `STDDEV_SAMP(retorno_log)` na janela × √252; retorno do período = `arg_max(fech_ajustado, data) / arg_min(fech_ajustado, data) − 1`. **Não** reusa `mart_indicadores_resumo`, cuja `volatilidade_media_30d` é a *média das volatilidades móveis de 30d ao longo de toda a série* — um número diferente do "risco realizado na janela". Misturar os dois enganaria a leitura.
+- **Filtro de período próprio da aba.** A Aba 2 tem seu próprio `st.radio` (key distinta), não sincroniza com a Aba 1 — cada aba é um contexto de leitura independente. O filtro afeta o retorno comparado e o scatter; **não** afeta o ranking de DY (sempre o último pregão) nem a tabela-resumo (canônica/histórica).
+- **Tabela-resumo como visão canônica histórica.** Lê `mart_indicadores_resumo` (1 linha/ticker sobre toda a série) + nome (`dim_empresa`) + DY atual. Rotulada explicitamente como "histórico completo, independente do filtro". Destaque de cor com `pandas.Styler` respeitando o **sentido** de cada métrica: retorno e DY → maior é melhor; volatilidade → menor é melhor; drawdown (valores negativos) → **menos negativo (mais perto de 0) é melhor**, logo o *máximo* da coluna é o verde.
+- **Cor por ticker estável entre gráficos.** Mapa `ticker→cor` em ordem alfabética, reusado no retorno comparado, no scatter e no ranking, para leitura cruzada (a mesma empresa tem a mesma cor em toda a aba).
+
+**Racional.** Re-ancorar na janela é a única forma honesta de comparar desempenho num recorte temporal — caso contrário um ticker com 5 anos de alta dominaria o gráfico mesmo num mês ruim. Recalcular o scatter (em vez de ler o resumo) evita o erro sutil de comparar "risco do período" com "média histórica de risco". Separar o que é filtrável do que é canônico deixa claro ao usuário o que cada número responde.
+
+**Trade-off aceito.** O scatter inclui, no STDDEV da janela, o `retorno_log` do 1º dia da janela — que tecnicamente "ponteia" para o pregão anterior à janela (1 ponto em ~120; efeito de borda desprezível). Documentado em `NOTAS.md`. Optei por não excluí-lo para manter a query simples e fiel à definição "desvio dos retornos diários na janela".
+
+**Escopo.** Encerra a Etapa 7: dashboard completo com 2 abas. Não foi adicionado `ttl` ao cache (dúvida em aberto em `NOTAS.md`) — fica para a Etapa 8 se virar requisito.

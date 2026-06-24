@@ -6,8 +6,13 @@ Rodar com:
 
 Pré-requisito: ``warehouse.duckdb`` populado (pipeline + dbt já rodados).
 
-Esta rodada implementa apenas a **Aba 1 — Visão Individual**. A estrutura
-de abas já deixa o lugar da "Comparação" (Aba 2), implementada depois.
+Duas abas:
+
+- **Aba 1 — Visão Individual**: 1 ticker por vez, cartões-resumo e 5
+  gráficos de série (preço/médias, retorno, volatilidade, drawdown, DY).
+- **Aba 2 — Comparação**: os 6 tickers lado a lado — retorno comparado na
+  janela (toggle base 100 / %), scatter risco×retorno, ranking de DY e
+  tabela-resumo histórica com destaque de melhor/pior.
 
 O Streamlit reexecuta este script a cada interação; o estado pesado
 (conexão, queries) é cacheado em ``dashboard/data.py``.
@@ -51,6 +56,21 @@ PERIODOS: dict[str, int | None] = {
     "2 anos": 24,
     "Tudo": None,
 }
+
+# Paleta qualitativa (Plotly "D3"). Mapeada por ticker em ordem alfabética
+# para que a MESMA empresa tenha a MESMA cor em todos os gráficos da Aba 2
+# (linha de retorno, ponto do scatter, barra de DY) — leitura cruzada.
+_PALETA_TICKERS = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+]
+
+
+def _cores_por_ticker(tickers: list[str]) -> dict[str, str]:
+    """Mapa estável ticker→cor (ordem alfabética), reusado entre gráficos."""
+    return {
+        ticker: _PALETA_TICKERS[i % len(_PALETA_TICKERS)]
+        for i, ticker in enumerate(sorted(tickers))
+    }
 
 
 def _data_inicio(opcao: str, minimo: dt.date, maximo: dt.date) -> dt.date:
@@ -174,6 +194,98 @@ def grafico_dividend_yield(df: pd.DataFrame, ticker: str) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
+# Construtores de gráfico (Plotly) — Aba 2 (Comparação)
+# ---------------------------------------------------------------------------
+def grafico_retorno_comparado(
+    df: pd.DataFrame, base_100: bool, cores: dict[str, str]
+) -> go.Figure:
+    """Desempenho dos tickers na janela: 1 linha por ticker, base comum.
+
+    ``base_100=True`` plota o preço reescalado (começa em 100);
+    ``False`` plota o retorno acumulado da janela em %. As duas leituras
+    vêm da mesma normalização (ver ``data.carregar_retorno_comparado``).
+    """
+    fig = go.Figure()
+    for ticker, grupo in df.groupby("ticker", sort=True):
+        y = grupo["base_100"] if base_100 else grupo["retorno_janela"] * 100
+        fig.add_trace(
+            go.Scatter(
+                x=grupo["data"], y=y, name=ticker,
+                line=dict(width=1.5, color=cores.get(ticker)),
+            )
+        )
+    # Linha de referência da base: 100 (base 100) ou 0% (retorno).
+    fig.add_hline(
+        y=100 if base_100 else 0, line=dict(dash="dot", width=1, color="gray")
+    )
+    fig.update_layout(
+        title="Desempenho comparado na janela"
+        + (" (base 100)" if base_100 else " (retorno acumulado)"),
+        xaxis_title="Data",
+        yaxis_title="Base 100" if base_100 else "Retorno acumulado (%)",
+        hovermode="x unified", legend_title="Ticker",
+    )
+    return fig
+
+
+def grafico_risco_retorno(df: pd.DataFrame, cores: dict[str, str]) -> go.Figure:
+    """Scatter risco×retorno do período: 1 ponto rotulado por ticker."""
+    fig = go.Figure(
+        go.Scatter(
+            x=df["volatilidade_periodo"] * 100,
+            y=df["retorno_periodo"] * 100,
+            mode="markers+text",
+            text=df["ticker"],
+            textposition="top center",
+            marker=dict(
+                size=13,
+                color=[cores.get(t) for t in df["ticker"]],
+                line=dict(width=1, color="white"),
+            ),
+            showlegend=False,
+            hovertemplate=(
+                "%{text}<br>Volatilidade: %{x:.1f}%"
+                "<br>Retorno: %{y:.1f}%<extra></extra>"
+            ),
+        )
+    )
+    # Linha de retorno zero ajuda a separar quem subiu de quem caiu.
+    fig.add_hline(y=0, line=dict(dash="dot", width=1, color="gray"))
+    fig.update_layout(
+        title="Risco × retorno (período filtrado)",
+        xaxis_title="Volatilidade anualizada (%)",
+        yaxis_title="Retorno do período (%)",
+    )
+    return fig
+
+
+def grafico_ranking_dy(df: pd.DataFrame, cores: dict[str, str]) -> go.Figure:
+    """Ranking de dividend yield atual: barras horizontais, maior no topo."""
+    # Plotly empilha categorias de baixo para cima na ordem dada; ordenar
+    # crescente deixa o maior DY no TOPO do gráfico.
+    ordenado = df.sort_values("dy_12m", ascending=True)
+    fig = go.Figure(
+        go.Bar(
+            x=ordenado["dy_12m"] * 100,
+            y=ordenado["ticker"],
+            orientation="h",
+            marker_color=[cores.get(t) for t in ordenado["ticker"]],
+            text=[
+                "—" if pd.isna(v) else f"{v * 100:.2f}%"
+                for v in ordenado["dy_12m"]
+            ],
+            textposition="auto",
+            hovertemplate="%{y}: %{x:.2f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title="Dividend yield atual (12m)",
+        xaxis_title="Dividend yield (%)", yaxis_title="Ticker",
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Aba 1 — Visão Individual
 # ---------------------------------------------------------------------------
 def _formatar_pct(valor: float | None, casas: int = 1) -> str:
@@ -240,6 +352,136 @@ def aba_visao_individual(tickers: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Aba 2 — Comparação entre tickers
+# ---------------------------------------------------------------------------
+# Mapeamento e SENTIDO de cada métrica da tabela-resumo. A direção importa
+# para colorir corretamente: em retorno e DY, maior é melhor; em drawdown,
+# "melhor" é o MENOS negativo (mais perto de 0) → também maior; em
+# volatilidade, menor é melhor. "Pregões" é informativo, não entra na cor.
+_COLUNAS_TABELA_PT = {
+    "ticker": "Ticker",
+    "nome": "Empresa",
+    "retorno_acumulado_total": "Retorno acumulado",
+    "max_drawdown": "Máx. drawdown",
+    "volatilidade_media_30d": "Volatilidade média (30d anual)",
+    "dy_atual": "Dividend yield atual",
+    "total_pregoes": "Pregões",
+}
+
+# Por coluna (já renomeada): True = maior é melhor (verde no máximo).
+_DIRECAO_METRICA = {
+    "Retorno acumulado": True,
+    "Máx. drawdown": True,                      # menos negativo é melhor
+    "Volatilidade média (30d anual)": False,    # menor é melhor
+    "Dividend yield atual": True,
+}
+
+_FORMATO_TABELA = {
+    "Retorno acumulado": "{:.1%}",
+    "Máx. drawdown": "{:.1%}",
+    "Volatilidade média (30d anual)": "{:.1%}",
+    "Dividend yield atual": "{:.2%}",
+    "Pregões": "{:.0f}",
+}
+
+
+def _estilo_melhor_pior(serie: pd.Series, maior_melhor: bool) -> list[str]:
+    """Pinta a melhor célula de verde e a pior de vermelho na coluna.
+
+    O sentido depende da métrica (``maior_melhor``): para retorno/DY/
+    drawdown o melhor é o máximo; para volatilidade, o mínimo. NaN não é
+    candidato a melhor nem pior.
+    """
+    validos = serie.dropna()
+    estilos = [""] * len(serie)
+    if validos.empty:
+        return estilos
+    melhor = validos.max() if maior_melhor else validos.min()
+    pior = validos.min() if maior_melhor else validos.max()
+    for i, valor in enumerate(serie):
+        if pd.isna(valor):
+            continue
+        if valor == melhor:
+            estilos[i] = "background-color: #1b5e20; color: white"
+        elif valor == pior:
+            estilos[i] = "background-color: #b71c1c; color: white"
+    return estilos
+
+
+def _estilizar_tabela_comparativa(df: pd.DataFrame):
+    """Renomeia, formata percentuais e colore melhor/pior por métrica."""
+    estilo = df.rename(columns=_COLUNAS_TABELA_PT).style.format(
+        _FORMATO_TABELA, na_rep="—"
+    )
+    for coluna, maior_melhor in _DIRECAO_METRICA.items():
+        estilo = estilo.apply(
+            _estilo_melhor_pior,
+            axis=0,
+            subset=[coluna],
+            maior_melhor=maior_melhor,
+        )
+    return estilo
+
+
+def aba_comparacao(tickers: list[str]) -> None:
+    """Filtro de período próprio + 4 componentes de comparação."""
+    cores = _cores_por_ticker(tickers)
+    minimo, maximo = data.intervalo_serie()
+
+    # Filtro próprio da aba (não sincroniza com a Aba 1 — `key` distinta).
+    opcao_periodo = st.radio(
+        "Período", list(PERIODOS), index=1, horizontal=True,
+        key="periodo_comparacao",
+    )
+    data_inicio = _data_inicio(opcao_periodo, minimo, maximo)
+    data_fim = maximo
+
+    # --- Componente 1: retorno comparado (respeita o filtro) ---------------
+    modo = st.radio(
+        "Escala", ["Retorno acumulado (%)", "Base 100"], index=0,
+        horizontal=True, key="escala_retorno",
+    )
+    comparado = data.carregar_retorno_comparado(data_inicio, data_fim)
+    if comparado.empty:
+        st.warning("Sem dados de indicadores para o período selecionado.")
+    else:
+        st.plotly_chart(
+            grafico_retorno_comparado(
+                comparado, base_100=(modo == "Base 100"), cores=cores
+            ),
+            use_container_width=True,
+        )
+
+    # --- Componentes 2 e 3: scatter (filtrado) | ranking DY (atual) --------
+    col_esq, col_dir = st.columns(2)
+    with col_esq:
+        risco = data.carregar_risco_retorno_periodo(data_inicio, data_fim)
+        st.plotly_chart(grafico_risco_retorno(risco, cores), use_container_width=True)
+    with col_dir:
+        dy = data.carregar_dy_atual_todos()
+        st.plotly_chart(grafico_ranking_dy(dy, cores), use_container_width=True)
+
+    st.caption(
+        f"Gráficos acima: janela desde {data_inicio:%d/%m/%Y}. "
+        "O ranking de dividend yield usa sempre o último pregão (não filtrado)."
+    )
+
+    # --- Componente 4: tabela-resumo histórica (NÃO filtrada) --------------
+    st.markdown("#### Resumo histórico por ticker")
+    st.caption(
+        f"Métricas sobre o histórico completo da série (desde "
+        f"{minimo:%d/%m/%Y}), independente do filtro de período acima. "
+        "Verde = melhor; vermelho = pior em cada métrica."
+    )
+    tabela = data.carregar_tabela_comparativa()
+    st.dataframe(
+        _estilizar_tabela_comparativa(tabela),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -258,14 +500,15 @@ def main() -> None:
         st.caption(f"Detalhe técnico: {exc}")
         st.stop()
 
-    aba_individual, aba_comparacao = st.tabs(["Visão Individual", "Comparação"])
+    aba_individual_tab, aba_comparacao_tab = st.tabs(
+        ["Visão Individual", "Comparação"]
+    )
 
-    with aba_individual:
+    with aba_individual_tab:
         aba_visao_individual(tickers)
 
-    with aba_comparacao:
-        # Aba 2 — implementada na próxima rodada (comparação entre tickers).
-        st.info("🚧 Em construção — comparação entre tickers chega na próxima rodada.")
+    with aba_comparacao_tab:
+        aba_comparacao(tickers)
 
 
 main()

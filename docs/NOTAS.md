@@ -640,6 +640,43 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   ponto, criando uma quebra na linha — que é a representação honesta de
   "indicador ainda indefinido", em vez de um 0 enganoso.
 
+- **Retorno "desde o início da série" ≠ retorno "da janela" (Aba 2).** Foi
+  o conceito central da Aba 2. O `retorno_acumulado` do mart é medido
+  contra o 1º pregão da série (≈2021) — responde "quanto rendeu desde
+  sempre". Para *comparar* tickers num recorte (ex.: últimos 6 meses), isso
+  engana: um ativo com 5 anos de alta domina o gráfico mesmo num mês ruim.
+  A solução é **re-ancorar na janela**: `FIRST_VALUE(fechamento_ajustado)
+  OVER (PARTITION BY empresa_id ORDER BY data)`, mas com o pulo do gato de
+  que o `WHERE data BETWEEN ...` roda **antes** da window function (ordem de
+  execução do SQL: FROM → WHERE → window → SELECT). Então o `FIRST_VALUE`
+  enxerga só as linhas filtradas, e a base vira o 1º pregão *da janela*.
+  Validei empiricamente: no 1º dia de cada ticker, retorno=0 e base=100.
+
+- **Base 100 e retorno % são a mesma coisa, duas leituras.** `base_100 =
+  preço/preço_base × 100` e `retorno = preço/preço_base − 1`. Diferem só no
+  deslocamento/escala do eixo y (100 vs 0%). Por isso o toggle não refaz
+  query — as duas colunas saem da mesma normalização. "Base 100" lê como
+  "R$100 investidos viram R$X"; "retorno %" lê como "+X%". Escolha de
+  apresentação, não de cálculo.
+
+- **Por que o scatter recalcula em vez de ler o resumo.** Tentação: usar a
+  `volatilidade_media_30d` do `mart_indicadores_resumo` no eixo X. Erro
+  sutil — essa coluna é a *média das volatilidades móveis de 30d ao longo
+  de toda a série*, não a volatilidade *realizada na janela filtrada*. São
+  números diferentes que respondem perguntas diferentes. O scatter
+  recalcula `STDDEV_SAMP(retorno_log)` na janela × √252 para que eixo X
+  (risco) e eixo Y (retorno) falem do **mesmo período**. Lição: agregado
+  pré-computado nem sempre serve — alinhar a granularidade temporal da
+  métrica com a da pergunta.
+
+- **Colorir tabela exige pensar no SENTIDO de cada métrica.** No `Styler`,
+  pintar "melhor de verde" não é só `highlight_max`: para retorno e DY o
+  melhor é o máximo; para volatilidade, o mínimo; e para **drawdown**
+  (valores negativos), o melhor é o *menos negativo* — ou seja, o máximo da
+  coluna (−0.35 é melhor que −0.46). Um `highlight_max` ingênuo acertaria
+  retorno mas pintaria a pior volatilidade de verde. Modelei a direção
+  explicitamente (`maior_melhor` por coluna).
+
 ### Dúvidas
 
 - O cache do Streamlit não invalida sozinho quando o `warehouse.duckdb` é
