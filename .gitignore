@@ -28,6 +28,7 @@ data/marts/
 *.parquet
 *.duckdb
 *.duckdb.wal
+*.duckdb-wal
 
 # Exceções para preservar a estrutura de pastas
 !data/raw/.gitkeep
@@ -37,7 +38,13 @@ data/marts/
 # ============================================================
 # Etapa 3 — DuckDB warehouse local (regenerável a partir do MinIO)
 # ============================================================
-warehouse.duckdb
+# Etapa 7 — EXCEÇÃO ao `*.duckdb` acima: o warehouse.duckdb é versionado
+# como SNAPSHOT dos marts para o deploy do dashboard no Streamlit Cloud
+# (a nuvem clona o repo e lê o arquivo read-only — lá não há MinIO).
+# Atualizá-lo é DELIBERADO (regenerar o pipeline e commitar à mão), NÃO a
+# cada `dbt build` local — ver docs/decisoes.md e docs/divida_tecnica.md.
+# O WAL (transitório) continua ignorado por `*.duckdb.wal`/`*.duckdb-wal`.
+!warehouse.duckdb
 warehouse.duckdb.wal
 
 # ============================================================
@@ -48,6 +55,11 @@ warehouse.duckdb.wal
 *.pem
 *.key
 credentials.json
+
+# Streamlit (Etapa 7) — secrets do app NUNCA versionados (na nuvem ficam
+# no painel do Streamlit Cloud; localmente em .streamlit/secrets.toml).
+# Já o .streamlit/config.toml (tema, sem segredos) PODE ser versionado.
+.streamlit/secrets.toml
 
 # ============================================================
 # IDE e editores

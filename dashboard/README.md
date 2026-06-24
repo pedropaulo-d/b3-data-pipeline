@@ -4,16 +4,18 @@ Dashboard **Streamlit + Plotly** sobre os marts da Etapa 6. Camada de
 visualização do pipeline — equivale, em escala de portfólio, a um Looker /
 Power BI / Metabase ligado ao warehouse.
 
-> Estado atual: **Aba 1 — Visão Individual**. A Aba 2 (Comparação entre
-> tickers) chega na próxima rodada; a estrutura de abas já está pronta.
+> Estado atual: **completo, 2 abas** — Aba 1 (Visão Individual) e Aba 2
+> (Comparação entre tickers). Etapa 7 concluída.
 
 ## O que mora aqui
 
-- `app.py` — entry point Streamlit: layout, abas, cartões `st.metric` e os
-  5 gráficos Plotly da visão individual.
+- `app.py` — entry point Streamlit: layout, abas, cartões `st.metric`, os
+  gráficos Plotly da visão individual e os da comparação.
 - `data.py` — acesso a dados: conexão cacheada (`@st.cache_resource`) e
   queries cacheadas (`@st.cache_data`), todas **parametrizadas** e
   **somente leitura** sobre os marts.
+- `requirements.txt` — ponteiro (`-r ../requirements-dashboard.txt`) para
+  o Streamlit Cloud detectar as deps automaticamente (ver Deploy abaixo).
 
 ## Como rodar
 
@@ -64,19 +66,62 @@ O `app.py` trata isso graciosamente: se a conexão falhar, mostra um
 vez de estourar stack trace. Recarregar a página depois que a escrita
 terminar resolve.
 
-## Deploy futuro (possibilidade)
+## Deploy no Streamlit Community Cloud
 
-O dashboard é **deployável por conta própria** (ex.: Streamlit Cloud) —
-por isso as deps ficam num `requirements-dashboard.txt` separado, com
-ciclo de vida distinto do runtime do pipeline. Pontos a resolver num
-deploy real, ainda **fora do escopo** desta rodada:
+O dashboard é **deployável por conta própria**. O deploy em si é manual,
+no site do Streamlit Cloud, com a conta do dono do repo. O repositório já
+está preparado: o `warehouse.duckdb` é versionado como **snapshot** dos
+marts (ver "Política de atualização do snapshot" abaixo), e o
+`dashboard/requirements.txt` faz a nuvem detectar as deps certas.
 
-- **Acesso ao dado.** O `warehouse.duckdb` é local e gitignored; um deploy
-  remoto precisaria de uma cópia do arquivo (ou apontar para um warehouse
-  acessível pela rede). DuckDB embarcado não foi pensado para acesso
-  remoto concorrente.
-- **Variáveis de ambiente.** O dashboard importa `warehouse.conexao`, que
-  importa `ingestion.config` — este lê `MINIO_*` do `.env` **no import**,
-  mesmo o dashboard não usando S3. Num deploy isolado, essas variáveis
-  precisam existir (valores podem ser dummy) ou o import falha. Desacoplar
-  isso é candidato a dívida técnica se o deploy virar requisito.
+### Como o app na nuvem lê os dados
+
+O app lê o `warehouse.duckdb` **versionado no repo** (um *snapshot* dos
+marts), em modo somente leitura. **Não** são dados ao vivo: a nuvem não
+tem acesso ao MinIO nem à máquina local. Por isso a Parte 0 desta entrega
+verificou que o dashboard consulta apenas tabelas materializadas
+(`marts.*`, fisicamente no `.duckdb`) — nunca as views `raw.*`/`staging.*`,
+que apontariam para o MinIO inexistente na nuvem.
+
+### Passos manuais (no site do Streamlit Cloud)
+
+1. Faça push do repo (incluindo o `warehouse.duckdb`) para o GitHub.
+2. Em <https://share.streamlit.io>, conecte a conta GitHub e clique em
+   **New app** → **Deploy a public app from GitHub**.
+3. Preencha:
+   - **Repository:** `Pedro/b3-data-pipeline` (o seu fork/remote).
+   - **Branch:** `main`.
+   - **Main file path:** `dashboard/app.py`.
+4. **Dependências:** nada a configurar. O Cloud detecta automaticamente o
+   `dashboard/requirements.txt` (busca primeiro no diretório do entrypoint),
+   que inclui `../requirements-dashboard.txt`. O `requirements.txt` da raiz
+   (runtime do pipeline) é ignorado.
+5. **Secrets (OBRIGATÓRIO):** em **Advanced settings → Secrets**, cole as
+   variáveis abaixo. O dashboard não usa MinIO, mas importa
+   `ingestion.config`, que **exige** essas variáveis no import (senão o app
+   quebra ao subir). Valores **dummy** bastam — secrets de nível raiz no
+   Streamlit Cloud viram variáveis de ambiente, que é o que o `config` lê:
+
+   ```toml
+   MINIO_ENDPOINT = "http://localhost:9000"
+   MINIO_ACCESS_KEY = "dummy"
+   MINIO_SECRET_KEY = "dummy"
+   ```
+
+6. Clique em **Deploy**. A URL pública (`https://<algo>.streamlit.app`) sai
+   ao fim — cole-a no README da raiz.
+
+### Política de atualização do snapshot
+
+O `warehouse.duckdb` versionado é um **snapshot atualizado deliberadamente**,
+não a cada `dbt build` local. Para publicar dados novos:
+
+1. Regenere o warehouse pelo pipeline (ingestão → `warehouse.setup` →
+   `dbt build`, ou rode a DAG).
+2. `git add warehouse.duckdb` e **commit consciente** ("atualiza snapshot
+   do dashboard — dados até AAAA-MM-DD").
+3. Push → o Streamlit Cloud redeploya sozinho ao detectar o commit.
+
+Isso evita inchar o histórico do Git com commits binários a cada build. Se
+o `.git` crescer demais, a alternativa (Parquet/Git LFS) está registrada em
+`docs/divida_tecnica.md`.

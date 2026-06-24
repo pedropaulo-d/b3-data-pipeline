@@ -658,3 +658,19 @@ Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `conf
 **Trade-off aceito.** O scatter inclui, no STDDEV da janela, o `retorno_log` do 1º dia da janela — que tecnicamente "ponteia" para o pregão anterior à janela (1 ponto em ~120; efeito de borda desprezível). Documentado em `NOTAS.md`. Optei por não excluí-lo para manter a query simples e fiel à definição "desvio dos retornos diários na janela".
 
 **Escopo.** Encerra a Etapa 7: dashboard completo com 2 abas. Não foi adicionado `ttl` ao cache (dúvida em aberto em `NOTAS.md`) — fica para a Etapa 8 se virar requisito.
+
+---
+
+## 2026-06-24 — Etapa 7 (deploy) — Versionar `warehouse.duckdb` como snapshot para o Streamlit Cloud
+
+**Contexto.** Para publicar o dashboard no Streamlit Community Cloud (a nuvem clona o repo e roda sem acesso ao MinIO nem à máquina local), o app precisa de uma fonte de dados dentro do repositório. O `warehouse.duckdb` (6,6 MB) era gitignored. Três opções: (1) versionar o `.duckdb` inteiro; (2) exportar os marts para Parquet e versionar só eles, abrindo via DuckDB na nuvem; (3) apontar o dashboard para um warehouse servido pela rede (Postgres/MotherDuck).
+
+**Decisão.** Versionar o `warehouse.duckdb` (opção 1). Liberado no `.gitignore` com `!warehouse.duckdb` (exceção pontual ao `*.duckdb` genérico); o WAL transitório segue ignorado (`*.duckdb.wal`/`*.duckdb-wal`). O dashboard não muda em nada — já abre o arquivo via caminho relativo à raiz do repo (`Path(__file__).parent.parent` em `warehouse/conexao.py`), que resolve igual local e na nuvem.
+
+**Pré-condição verificada (Parte 0 da entrega).** Auditei que `dashboard/data.py` consulta **somente tabelas materializadas** (`marts.dim_empresa`, `mart_indicadores_diarios`, `mart_dividend_yield`, `mart_indicadores_resumo` — todas `BASE TABLE` no arquivo, confirmado via `information_schema`). Nenhuma query toca as views `raw.*`/`staging.*`/`fato_dividendos`, que apontam para o MinIO e quebrariam na nuvem. Sem isso, versionar o arquivo não bastaria.
+
+**Dependências e secrets na nuvem.** O Streamlit Cloud não aceita requirements de nome custom e busca primeiro no diretório do entrypoint; criei `dashboard/requirements.txt` que inclui (`-r ../requirements-dashboard.txt`) o arquivo canônico da raiz — assim o `requirements.txt` de runtime (auditado pelo CI) fica intocado. O acoplamento de import herdado (`ingestion.config` exige `MINIO_*` no import, mesmo o dashboard não usando S3) é resolvido **sem código**: secrets de nível raiz no Streamlit Cloud viram variáveis de ambiente, então `MINIO_*` dummy nos secrets satisfazem o import.
+
+**Racional.** Opção 1 é a de menor atrito: arquivo pequeno (6,6 MB), deploy trivial, **zero refatoração** do dashboard. As opções 2 e 3 dariam dado vivo ou repo mais leve, mas custariam código novo (export de Parquet, ou cliente de rede) — desproporcional para um portfólio cujo dado muda 1×/dia e cujo objetivo é demonstrar a stack, não operar em produção.
+
+**Trade-off aceito.** Commits binários do `.duckdb` incham o histórico do Git ao longo do tempo (o Git versiona o arquivo inteiro a cada mudança, não o delta). Mitigação: tratar o arquivo como **snapshot atualizado deliberadamente** (regenerar + commitar à mão com mensagem datada), nunca automático a cada `dbt build`. Gatilho e plano B (Parquet ou Git LFS) registrados em `docs/divida_tecnica.md`.

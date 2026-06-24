@@ -150,4 +150,59 @@ ficarem soltos ao lado de `name:`.
 
 ---
 
+## Etapa 7 — Dashboard (deploy)
+
+### DT-7.1 — `warehouse.duckdb` versionado incha o histórico do Git
+Para o deploy no Streamlit Cloud, o `warehouse.duckdb` (6,6 MB) passou a
+ser versionado como **snapshot** dos marts (ver `docs/decisoes.md`,
+2026-06-24). O Git versiona o arquivo binário **inteiro** a cada commit,
+não o delta — então cada atualização do snapshot soma ~6 MB ao histórico
+permanente do `.git`, mesmo que poucas linhas dos marts tenham mudado.
+
+- **Motivo do adiamento:** com atualização deliberada (não a cada `dbt
+  build`) e um arquivo pequeno, o crescimento é lento e aceitável para um
+  portfólio. A alternativa custaria código novo agora, sem ganho
+  proporcional.
+- **Gatilho:** se o `.git` passar de um tamanho incômodo (regra de bolso:
+  alguns commits do snapshot tornando o `git clone` visivelmente lento, ou
+  `.git` > ~100 MB). Aí migrar para uma das opções já consideradas:
+  - **Parquet (opção 2):** exportar os 4 marts para Parquet e versionar só
+    eles; o dashboard abre via DuckDB `read_parquet`. Repo mais leve e
+    diff-friendly (colunar), mas exige um passo de export e ajuste no
+    `data.py`.
+  - **Git LFS:** manter o `.duckdb` mas fora do histórico regular (ponteiros
+    + storage LFS). Resolve o inchaço sem mudar o app; depende de o host de
+    deploy suportar LFS no checkout.
+
+### DT-7.2 — Dashboard acopla a `ingestion.config` (exige credenciais S3 no import)
+O dashboard, ao importar `warehouse.conexao`, importa transitivamente
+`ingestion.config`, que **valida `MINIO_*` no import** (`_exigir_var`).
+Resultado: para subir o dashboard no Streamlit Cloud é preciso definir
+secrets `MINIO_*` **placeholder (dummy)** — mesmo o dashboard NÃO usando
+MinIO (abre o DuckDB em `read_only=True` e lê só marts locais, sem
+`configurar_s3`).
+
+- **Por que é dívida:** o dashboard não deveria depender de configuração de
+  *ingestão*. Abrir o DuckDB em read-only deveria exigir apenas o **caminho
+  do arquivo** — nenhuma credencial de S3. Hoje a exigência vem "de carona"
+  numa cadeia de imports, não de uma necessidade real do app.
+- **Motivo do adiamento:** desacoplar agora mexeria em `ingestion.config`
+  (consumido também pela ingestão e pelo setup do warehouse); o custo não se
+  justifica só para o deploy, e o contorno (secrets dummy) é trivial e está
+  documentado em `dashboard/README.md`.
+- **Gatilho/solução:** na refatoração estruturada (pós-Etapa 7), fazer
+  `obter_conexao(read_only=True)` **não importar nem exigir**
+  `ingestion.config`. Caminhos possíveis:
+  - mover a resolução das credenciais S3 para **dentro** de `configurar_s3`
+    (lazy — só lê `MINIO_*` quando a função é de fato chamada), ou
+  - separar a config de **caminho do DuckDB** da config de **S3** (módulos
+    distintos), para `conexao.py` depender só da primeira.
+
+  Quando resolvido, os secrets dummy do Streamlit Cloud deixam de ser
+  necessários. Relacionado à refatoração **Forma C** (DT-5.1, parcialmente
+  feita: separou `obter_conexao` de `configurar_s3`, mas o import de
+  `ingestion.config` em `conexao.py` permaneceu).
+
+---
+
 <!-- Próximas etapas adicionam itens abaixo, agrupados por etapa de origem. -->

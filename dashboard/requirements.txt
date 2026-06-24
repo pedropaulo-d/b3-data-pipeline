@@ -1,0 +1,17 @@
+# ============================================================
+# Dependências do dashboard PARA O STREAMLIT CLOUD (Etapa 7)
+# ============================================================
+# O Streamlit Community Cloud NÃO aceita um arquivo de requirements com
+# nome custom (ex.: requirements-dashboard.txt): ele detecta apenas nomes
+# fixos (uv.lock, Pipfile, environment.yml, requirements.txt, pyproject.toml)
+# e busca PRIMEIRO no diretório do entrypoint (aqui, dashboard/, porque o
+# entrypoint é dashboard/app.py) e só depois na raiz do repo.
+#
+# Por isso este arquivo existe: garante que a nuvem instale as deps do
+# DASHBOARD — e nunca o requirements.txt da raiz (runtime do pipeline,
+# auditado pelo CI, que nem tem streamlit/plotly).
+#
+# Para não duplicar a lista, ele apenas inclui o arquivo canônico da raiz
+# (`-r` resolve o caminho relativo a ESTE arquivo → ../ = raiz do repo).
+# Fonte única da verdade continua sendo requirements-dashboard.txt.
+-r ../requirements-dashboard.txt

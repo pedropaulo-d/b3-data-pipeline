@@ -4,6 +4,8 @@ Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto
 
 **Status atual:** Etapa 7 — Dashboard com Streamlit ✅ concluída (Aba 1 — Visão Individual e Aba 2 — Comparação entre tickers). Próxima: Etapa 8 — Polimento e portfólio.
 
+**🔗 Dashboard ao vivo:** _(preencher após o deploy)_ `https://<app>.streamlit.app` — publicado no Streamlit Community Cloud. O app lê um **snapshot** dos marts versionado no repo (`warehouse.duckdb`), não dados ao vivo; ver `dashboard/README.md` para o passo a passo do deploy e a política de atualização do snapshot.
+
 ---
 
 ## Escopo
@@ -213,7 +215,9 @@ dbt docs serve --profiles-dir ./ --port 8081   # 8080 está com o Airflow
 # Requer os marts já materializados (passo 11 ou a DAG). Da raiz do repo:
 pip install -r requirements-dashboard.txt
 streamlit run dashboard/app.py        # abre em http://localhost:8501
-# Detalhes e limitação de concorrência em dashboard/README.md.
+# Deploy no Streamlit Cloud: o repo já versiona warehouse.duckdb como
+# snapshot e tem dashboard/requirements.txt. Passo a passo (incl. secrets
+# dummy de MinIO) e limitação de concorrência em dashboard/README.md.
 ```
 
 Para derrubar todos os serviços preservando os dados:
