@@ -8,8 +8,16 @@
 # endereço são gerenciados pelo Streamlit Cloud.
 
 [theme]
-base = "light"
-primaryColor = "#1f77b4"          # mesmo azul-base dos gráficos Plotly
+# Tema ESCURO padrão do Streamlit (valores oficiais), para o app na nuvem
+# usar modo escuro por padrão para qualquer visitante — idêntico ao que se
+# via localmente. Os gráficos Plotly acompanham este tema automaticamente:
+# `st.plotly_chart` usa `theme="streamlit"` por padrão, então herda o fundo
+# escuro sem precisar de template Plotly hardcoded.
+base = "dark"
+primaryColor = "#FF4B4B"               # vermelho de destaque dos widgets
+backgroundColor = "#0E1117"            # fundo principal
+secondaryBackgroundColor = "#262730"   # sidebar, cartões, tabela
+textColor = "#FAFAFA"
 
 [browser]
 gatherUsageStats = false
