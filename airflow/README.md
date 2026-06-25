@@ -10,17 +10,21 @@ Compose junto com o MinIO (raiz do repo, `docker-compose.yml`).
 
 DAG: **`pipeline_b3_diario`** (arquivo: `dags/pipeline_b3_diario.py`).
 
-Quatro tasks em sequência linear, cada uma um `BashOperator` que roda o
-mesmo comando que o usuário rodaria à mão antes da automação:
+Cinco tasks, cada uma um `BashOperator` que roda o mesmo comando que o
+usuário rodaria à mão antes da automação. As **duas ingestões** (cotações
+e dividendos) são independentes e rodam em **paralelo**; depois o fluxo é
+linear:
 
-| Ordem | Task                | Comando                                            | Função |
-|-------|---------------------|----------------------------------------------------|--------|
-| 1     | `extract_cotacoes`  | `python -m ingestion.main --modo diario`           | Baixa o pregão do dia para os 6 tickers e grava partição Parquet no MinIO. |
-| 2     | `refresh_warehouse` | `python -m warehouse.setup`                        | Garante schema `raw` e view `raw.cotacoes` no `warehouse.duckdb`. |
-| 3     | `dbt_run`           | `dbt run --profiles-dir ./` (dentro de `dbt/`)     | Materializa staging (view) + marts (`fato_cotacoes_diarias`, `dim_empresa`, `dim_tempo`). |
-| 4     | `dbt_test`          | `dbt test --profiles-dir ./` (dentro de `dbt/`)    | Roda os 24 testes (nativos + dbt_utils + custom). |
+| Ordem | Task                 | Comando                                            | Função |
+|-------|----------------------|----------------------------------------------------|--------|
+| 1a    | `extract_cotacoes`   | `python -m ingestion.main --modo diario`           | Baixa o pregão do dia para os 6 tickers e grava partição Parquet (por dia) no MinIO. |
+| 1b    | `extract_dividendos` | `python -m ingestion.dividendos.main --modo incremental` | Baixa proventos (yfinance) e reescreve a partição do **ano corrente** (por ano) no MinIO. |
+| 2     | `refresh_warehouse`  | `python -m warehouse.setup`                        | Garante schema `raw` e as views `raw.cotacoes` e `raw.dividendos` no `warehouse.duckdb`. **Fan-in:** espera 1a e 1b. |
+| 3     | `dbt_run`            | `dbt run --profiles-dir ./` (dentro de `dbt/`)     | Materializa staging (view) + marts: cotações (`fato_cotacoes_diarias`, `dim_empresa`, `dim_tempo`) e Etapa 6 (`fato_dividendos`, `mart_indicadores_diarios`, `mart_dividend_yield`, `mart_indicadores_resumo`). |
+| 4     | `dbt_test`           | `dbt test --profiles-dir ./` (dentro de `dbt/`)    | Roda os 49 testes (nativos + dbt_utils + custom). |
 
-Dependências: `extract_cotacoes >> refresh_warehouse >> dbt_run >> dbt_test`.
+Dependências: `[extract_cotacoes, extract_dividendos] >> refresh_warehouse >> dbt_run >> dbt_test`
+— `refresh_warehouse` só dispara depois que **as duas** ingestões terminam.
 
 **Schedule:** `0 20 * * *` no fuso `America/Sao_Paulo` — 20h horário de
 Brasília, após o fechamento do pregão.
@@ -77,7 +81,8 @@ A DAG `pipeline_b3_diario` aparece **pausada** por padrão
 1. Clicar no toggle ao lado do nome (despausa).
 2. Botão "Trigger DAG" no canto superior direito para forçar execução
    imediata, ou aguardar o schedule cron.
-3. Acompanhar as 4 tasks ficando verdes em `Grid View`.
+3. Acompanhar as 5 tasks ficando verdes em `Grid View` (as duas
+   ingestões iniciam juntas, lado a lado, no topo do grid).
 
 Logs por task: clicar na task no grid → aba "Logs". Os arquivos
 correspondentes ficam em `airflow/logs/` no host (bind mount), úteis
@@ -189,8 +194,10 @@ seguido de uma nova subida.
 
 ## Limites desta etapa
 
-- **Sem indicadores financeiros** (média móvel, retornos acumulados,
-  volatilidade) — fica para a Etapa 6.
+- **Indicadores financeiros** (média móvel, retornos acumulados,
+  volatilidade, dividend yield) entraram na Etapa 6 e **já rodam por esta
+  DAG**: a ingestão de dividendos virou a task `extract_dividendos` e os
+  marts da Etapa 6 são materializados pelo `dbt run` (grafo inteiro).
 - **Sem dashboard Streamlit** — Etapa 7.
 - **LocalExecutor**, não Celery. Sem worker separado, sem Redis. Para
   o volume do projeto isso basta; ver `docs/decisoes.md` para o porquê.

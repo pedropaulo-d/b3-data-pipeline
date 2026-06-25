@@ -208,7 +208,8 @@ dbt docs serve --profiles-dir ./ --port 8081   # 8080 está com o Airflow
 
 # 12. Etapa 5 — usar o Airflow para automatizar os passos 8, 9 e 11.
 # Na UI (http://localhost:8080) localizar a DAG `pipeline_b3_diario`,
-# despausar e clicar em "Trigger DAG". As 4 tasks devem ficar verdes.
+# despausar e clicar em "Trigger DAG". As 5 tasks devem ficar verdes
+# (extract_cotacoes e extract_dividendos iniciam em paralelo).
 # Detalhes em airflow/README.md.
 
 # 13. Etapa 7 — dashboard Streamlit (lê os marts, somente leitura).
@@ -309,7 +310,7 @@ As decisões de arquitetura e seus trade-offs estão documentadas em [`docs/deci
 17. **Airflow no mesmo `docker-compose.yml` do MinIO** (Etapa 5) — compose único renomeado; mesma rede Docker permite à DAG resolver `minio:9000`.
 18. **LocalExecutor em vez de CeleryExecutor** (Etapa 5) — single-host, volume desprezível, sem worker/Redis separados.
 19. **Bind mount + BashOperator** (Etapa 5) — DAG roda os mesmos comandos do terminal manual; paridade exata com a execução documentada no README.
-20. **DAG de 4 tasks (`extract` → `refresh_warehouse` → `dbt run` → `dbt test`)** (Etapa 5) — uma task por etapa lógica do pipeline; retry e visibilidade na granularidade certa.
+20. **DAG de 5 tasks (`[extract_cotacoes ∥ extract_dividendos]` → `refresh_warehouse` → `dbt run` → `dbt test`)** (Etapa 5; dividendos integrados na Etapa 6) — uma task por etapa lógica do pipeline; as duas ingestões em paralelo com fan-in em `refresh_warehouse`; retry e visibilidade na granularidade certa.
 21. **Schedule `0 20 * * *` America/Sao_Paulo, `catchup=False`** (Etapa 5) — pós-fechamento + ajustes do dia; sem backfill automático (yfinance não muda histórico retroativamente).
 22. **`MINIO_ENDPOINT=http://minio:9000` dentro do container, `localhost:9000` no host** (Etapa 5) — fonte mais comum de "funciona aqui, falha lá"; documentado em três lugares.
 23. **Escopo de indicadores: mercado + dividend yield** (Etapa 6) — fundamentalistas (P/L, P/VP, ROE) fora por limitação do yfinance; DY é o único viável (depende só de proventos + preço).

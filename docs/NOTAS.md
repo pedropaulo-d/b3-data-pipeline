@@ -459,6 +459,20 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   cria conflito. A forma correta seria o constraints file oficial do
   Airflow.
 
+- **Fan-in no Airflow: uma task com múltiplas upstream usa lista à
+  esquerda do `>>`.** Ao integrar a ingestão de dividendos (Etapa 6) na
+  DAG, `extract_cotacoes` e `extract_dividendos` precisam rodar em
+  paralelo e `refresh_warehouse` só pode começar depois das **duas**. A
+  sintaxe `[extract_cotacoes, extract_dividendos] >> refresh_warehouse`
+  declara exatamente isso: cada elemento da lista vira upstream de
+  `refresh_warehouse`, **sem** criar dependência entre os dois extracts
+  (eles seguem independentes/paralelos). Equivale a escrever as duas
+  linhas `extract_cotacoes >> refresh_warehouse` e
+  `extract_dividendos >> refresh_warehouse`, mas em uma só. Com o
+  LocalExecutor, as duas ingestões de fato executam concorrentes (slots
+  de paralelismo no mesmo host). Lição: lista-à-esquerda = fan-in
+  (junção); lista-à-direita seria fan-out (ramificação).
+
 ---
 
 ## Etapa 6 — Indicadores e métricas financeiras

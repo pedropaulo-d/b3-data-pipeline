@@ -1,11 +1,18 @@
 """DAG principal do pipeline B3 — execução diária.
 
-Automatiza a sequência manual da Etapa 4:
+Automatiza a sequência manual das Etapas 4 e 6:
 
-    1. python -m ingestion.main --modo diario
-    2. python -m warehouse.setup
-    3. dbt run  (no diretório dbt/)
-    4. dbt test (no diretório dbt/)
+    1a. python -m ingestion.main --modo diario             ┐ em
+    1b. python -m ingestion.dividendos.main --modo incremental ┘ paralelo
+    2.  python -m warehouse.setup                          (espera 1a e 1b)
+    3.  dbt run  (no diretório dbt/)
+    4.  dbt test (no diretório dbt/)
+
+As duas ingestões (cotações e dividendos) são independentes entre si e
+rodam em PARALELO — o LocalExecutor executa tasks concorrentes no mesmo
+host. ``refresh_warehouse`` é um ponto de fan-in: só dispara depois que
+AMBAS terminam, porque ele (re)cria as views ``raw.cotacoes`` e
+``raw.dividendos``, e o ``dbt run`` seguinte consome as duas.
 
 Cada passo vira uma task BashOperator que executa o MESMO comando que
 rodaria no terminal do host. O projeto inteiro é montado em
@@ -44,8 +51,8 @@ default_args = {
 with DAG(
     dag_id="pipeline_b3_diario",
     description=(
-        "Pipeline diário B3: ingestão (yfinance) -> warehouse (DuckDB) "
-        "-> dbt run -> dbt test."
+        "Pipeline diário B3: ingestão de cotações + dividendos (yfinance, "
+        "em paralelo) -> warehouse (DuckDB) -> dbt run -> dbt test."
     ),
     schedule="0 20 * * *",
     # start_date no passado recente + catchup=False: a primeira
@@ -62,6 +69,19 @@ with DAG(
         task_id="extract_cotacoes",
         bash_command=(
             f"cd {PROJECT_DIR} && python -m ingestion.main --modo diario"
+        ),
+    )
+
+    # Ingestão de dividendos (Etapa 6), em paralelo com as cotações.
+    # MODO INCREMENTAL: reescreve só a partição do ano corrente — espelha
+    # o `--modo diario` das cotações. `inicial` reescreveria todas as
+    # partições de ano a cada execução, custo inútil já que proventos
+    # passados não mudam (ver ingestion/dividendos/main.py).
+    extract_dividendos = BashOperator(
+        task_id="extract_dividendos",
+        bash_command=(
+            f"cd {PROJECT_DIR} && python -m ingestion.dividendos.main "
+            "--modo incremental"
         ),
     )
 
@@ -86,4 +106,8 @@ with DAG(
         ),
     )
 
-    extract_cotacoes >> refresh_warehouse >> dbt_run >> dbt_test
+    # Fan-in: refresh_warehouse só roda após AMBAS as ingestões. A lista à
+    # esquerda do `>>` declara que extract_cotacoes e extract_dividendos
+    # são upstream de refresh_warehouse (sem criar dependência entre elas —
+    # seguem paralelas). Daí o pipeline volta a ser linear.
+    [extract_cotacoes, extract_dividendos] >> refresh_warehouse >> dbt_run >> dbt_test

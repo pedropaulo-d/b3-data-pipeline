@@ -715,3 +715,27 @@ Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `conf
 - **Volume fora do critério, de propósito.** `volume = 0` pode ser legítimo em pregão de baixíssima liquidez, e `fato_volume_nao_negativo` aceita zero. O sinal de barra inválida é o **preço** (OHL), não o volume — filtrar por volume arriscaria descartar pregão real.
 
 **Trade-off aceito.** A sessão mais recente só aparece nos marts **após consolidar** (no pregão seguinte, quando o yfinance devolve a barra completa). Para um pipeline diário de portfólio, ter o último dia com 1 pregão de defasagem quando a fonte ainda não fechou os números é preferível a propagar OHLC inconsistente. Se algum dia o requisito for mostrar a barra provisória, seria com coluna de flag e tratamento explícito downstream — não deixando o dado cru contaminar a fato.
+
+---
+
+## 2026-06-25 — Etapa 6 na DAG — Ingestão de dividendos integrada ao `pipeline_b3_diario`, em paralelo
+
+**Contexto.** A DAG `pipeline_b3_diario` foi construída na Etapa 5 e só ingeria cotações (`extract_cotacoes` → `refresh_warehouse` → `dbt_run` → `dbt_test`). Os dividendos da Etapa 6 (`ingestion.dividendos.main`) eram ingeridos **à mão**, fora da automação — o `dbt run` da DAG já materializava os marts da Etapa 6 (é `dbt run` puro, sem `--select`), mas operava sobre uma partição de dividendos que ninguém atualizava no dia a dia. Faltava só fechar o ciclo: automatizar a ingestão de proventos.
+
+**Decisão.** Adicionar a task `extract_dividendos` (`python -m ingestion.dividendos.main --modo incremental`) **em paralelo** com `extract_cotacoes`, com `refresh_warehouse` como ponto de fan-in:
+
+```
+[extract_cotacoes, extract_dividendos] >> refresh_warehouse >> dbt_run >> dbt_test
+```
+
+Três sub-decisões:
+
+- **Uma DAG só, não uma DAG separada para dividendos.** As duas fontes alimentam o mesmo warehouse e os mesmos marts; uma DAG separada exigiria coordenar dois schedules e duplicar o trecho `refresh_warehouse`/`dbt`. Numa DAG só, o grafo expressa a dependência real (marts dependem das duas ingestões) e há um único ponto de orquestração para manter.
+
+- **Modo `incremental`, não `inicial`.** `incremental` reescreve apenas a partição do **ano corrente** (`ano={ano}/dividendos.parquet`), espelhando o `--modo diario` das cotações. `inicial` reescreveria **todas** as ~22 partições de ano a cada execução diária — proventos passados não mudam, então seria custo de I/O inútil. A carga histórica completa (`inicial`) continua sendo um evento manual de bootstrap, fora da DAG.
+
+- **Paralelismo real via LocalExecutor.** As duas ingestões são independentes (fontes distintas no yfinance, prefixos distintos no MinIO, sem ordem entre si). O LocalExecutor executa tasks concorrentes no mesmo host, então declarar paralelismo encurta o caminho crítico (a DAG não espera as cotações para começar os dividendos). O fan-in em `refresh_warehouse` é o que garante coerência: ele (re)cria as views `raw.cotacoes` **e** `raw.dividendos`, e o `dbt run` seguinte consome as duas — rodar antes de qualquer ingestão terminar veria dado parcial.
+
+**O que NÃO mudou.** Schedule (`0 20 * * *`, `America/Sao_Paulo`), executor (Local), `catchup=False`, `retries=2`/5min, bind mount em `/opt/project`. `refresh_warehouse` já criava a view `raw.dividendos` desde a Etapa 6 (`warehouse.setup`), então a task não precisou de ajuste. `dbt_run`/`dbt_test` já rodavam o grafo inteiro (marts da Etapa 6 incluídos) — a integração só passou a **alimentá-los com dividendos frescos** todo dia.
+
+**Trade-off aceito.** A DAG ganha um modo de falha novo: se só a ingestão de dividendos falhar (após os retries), a DAG inteira marca `failed` e os marts não atualizam — mesmo que as cotações tenham vindo bem. É o comportamento correto para um pipeline cujo produto final (marts de indicadores + dividend yield) depende das duas fontes; preferi acoplamento explícito a deixar os marts atualizarem sobre dividendos defasados sem ninguém perceber. Se algum dia a disponibilidade de cotações precisar ser independente da de dividendos, a saída seria `trigger_rule` custom em `refresh_warehouse` (ex.: `all_done` + checagem) — não foi necessário agora.
