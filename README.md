@@ -1,91 +1,119 @@
 # b3-data-pipeline
 
-Pipeline de dados de mercado financeiro brasileiro (B3) construído como projeto de portfólio para vaga de engenharia de dados.
+Pipeline de dados de mercado da B3, ponta a ponta: **ingestão → object storage → warehouse → transformação (dbt) → orquestração (Airflow) → dashboard**. Projeto de portfólio para engenharia de dados, rodando 100% local.
 
-**Status atual:** Etapa 7 — Dashboard com Streamlit ✅ concluída (Aba 1 — Visão Individual e Aba 2 — Comparação entre tickers). Próxima: Etapa 8 — Polimento e portfólio.
+[![security](https://github.com/pedropaulo-d/b3-data-pipeline/actions/workflows/security.yml/badge.svg)](https://github.com/pedropaulo-d/b3-data-pipeline/actions/workflows/security.yml)
 
-**🔗 Dashboard ao vivo:** _(preencher após o deploy)_ `https://<app>.streamlit.app` — publicado no Streamlit Community Cloud. O app lê um **snapshot** dos marts versionado no repo (`warehouse.duckdb`), não dados ao vivo; ver `dashboard/README.md` para o passo a passo do deploy e a política de atualização do snapshot.
+---
+
+## 🔗 Dashboard ao vivo
+
+**<https://b3-data-pipeline-jzsx7mgpas7obxzseykg8g.streamlit.app/>**
+
+Publicado no Streamlit Community Cloud. **Nota honesta:** o app lê um **snapshot** dos marts versionado no repo (`warehouse.duckdb`), **não dados ao vivo** — a atualização do snapshot é manual e deliberada (ver [`dashboard/README.md`](dashboard/README.md)).
+
+| Visão Individual (Aba 1) | Comparação (Aba 2) |
+|--------------------------|--------------------|
+| ![Dashboard — Visão Individual de PETR4: preço e médias móveis](docs/img/dashboard-individual.png) | ![Dashboard — Comparação: scatter risco × retorno](docs/img/dashboard-comparacao.png) |
+| Preço com médias móveis e indicadores de um ticker. | Risco × retorno recalculado na janela, para os 6 tickers. |
+
+---
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    YF["yfinance<br/>cotações + dividendos"]
+
+    subgraph ingest["Ingestão · Python → Parquet"]
+        ICOT["ingestion.main<br/>cotações"]
+        IDIV["ingestion.dividendos<br/>dividendos"]
+    end
+
+    RAW[("MinIO · Raw Layer<br/>cotações: ano/mês/dia<br/>dividendos: ano")]
+
+    WH["DuckDB<br/>views raw.* via httpfs"]
+
+    subgraph transform["dbt · modelagem Kimball"]
+        STG["staging"]
+        CORE["fato_cotacoes_diarias · fato_dividendos<br/>dim_empresa · dim_tempo"]
+        MARTS["mart_indicadores_diarios<br/>mart_indicadores_resumo<br/>mart_dividend_yield"]
+        STG --> CORE --> MARTS
+    end
+
+    DASH["Streamlit + Plotly<br/>dashboard"]
+
+    YF --> ICOT
+    YF --> IDIV
+    ICOT --> RAW
+    IDIV --> RAW
+    RAW --> WH --> STG
+    MARTS --> DASH
+
+    AF["Apache Airflow<br/>DAG diária · 20h America/Sao_Paulo"]
+    AF -. orquestra .-> ingest
+    AF -. orquestra .-> WH
+    AF -. orquestra .-> transform
+```
+
+Camadas seguindo arquitetura medalhão: **raw** (imutável, fiel à fonte) → **staging** (limpeza/tipagem) → **marts** (modelos analíticos). O raw mora exclusivamente no MinIO; o DuckDB o expõe via views `httpfs` sem materializar.
 
 ---
 
 ## Escopo
 
-Trabalhamos com seis tickers líquidos cobrindo quatro setores distintos. Histórico inicial de **5 anos**, suficiente para exercitar particionamento, modelagem e cálculo de indicadores sem inflar o volume.
+Seis tickers líquidos cobrindo quatro setores, com histórico de **5 anos** — suficiente para exercitar particionamento, modelagem e indicadores sem inflar o volume.
 
-| Ticker | Empresa             | Setor              |
-|--------|---------------------|--------------------|
-| PETR4  | Petrobras           | Petróleo e Gás     |
-| VALE3  | Vale                | Mineração          |
-| ITUB4  | Itaú Unibanco       | Financeiro         |
-| BBDC4  | Bradesco            | Financeiro         |
-| WEGE3  | WEG                 | Bens Industriais   |
-| ABEV3  | Ambev               | Consumo Não-Cíclico|
+| Ticker | Empresa       | Setor               |
+|--------|---------------|---------------------|
+| PETR4  | Petrobras     | Petróleo e Gás      |
+| VALE3  | Vale          | Mineração           |
+| ITUB4  | Itaú Unibanco | Financeiro          |
+| BBDC4  | Bradesco      | Financeiro          |
+| WEGE3  | WEG           | Bens Industriais    |
+| ABEV3  | Ambev         | Consumo Não-Cíclico |
 
-> A lista de tickers e a janela histórica são parâmetros do projeto, não constantes do código. Escalar para o Ibovespa inteiro é trivial — não é o objetivo aqui.
-
----
-
-## Arquitetura prevista
-
-Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes.
-
-```
-                          ┌──────────────────────────┐
-                          │        Airflow  ✅       │
-                          │     (orquestração)       │
-                          └────────────┬─────────────┘
-                                       │
-                                       ▼
-  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
-  │ yfinance │──▶ │  Python  │──▶ │  MinIO   │──▶ │  DuckDB  │──▶ │   dbt    │
-  │ (origem) │    │ (ingest✅)│    │ (raw  ✅) │    │ (WH   ✅) │    │ (mod. ✅) │
-  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └────┬─────┘
-                                                                       │
-                                                                       ▼
-                                                                ┌──────────────┐
-                                                                │  Streamlit   │
-                                                                │ (dashboard)  │
-                                                                └──────────────┘
-```
-
-> A partir da Etapa 2 o raw layer mora **exclusivamente no MinIO**. Desde
-> a Etapa 6 são **duas fontes**: `raw/cotacoes/...` (particionada por dia)
-> e `raw/dividendos/...` (particionada por ano). A pasta `data/raw/` no
-> filesystem é histórica da Etapa 1 — o `.gitkeep` documenta a convenção,
-> mas nada é gravado lá.
->
-> Na camada `marts` do dbt, além da estrela de cotações, a Etapa 6 adiciona
-> os marts de indicadores: `mart_indicadores_diarios`,
-> `mart_indicadores_resumo`, `fato_dividendos` e `mart_dividend_yield`.
+A lista de tickers e a janela histórica são parâmetros, não constantes do código — escalar para o Ibovespa inteiro é mudar uma lista.
 
 ---
 
 ## Stack
 
-- **Linguagem:** Python 3.11+
-- **Ingestão:** yfinance, pandas, pyarrow
-- **Object storage:** MinIO (compatível S3, local)
-- **Warehouse analítico:** DuckDB
-- **Transformações:** dbt (adapter dbt-duckdb)
-- **Orquestração:** Apache Airflow (via Docker)
-- **Visualização:** Streamlit + Plotly
-- **Ambiente:** local (sem cloud), pip + venv
+| Camada | Tecnologia | Papel |
+|--------|-----------|-------|
+| Linguagem | **Python 3.11+** (pip + venv) | Ingestão e utilitários. |
+| Ingestão | **yfinance, pandas, pyarrow** | Baixa cotações e dividendos; grava Parquet. |
+| Object storage | **MinIO** (compatível S3, via boto3) | Raw layer em Parquet particionado. |
+| Warehouse | **DuckDB** | Engine analítico embarcado; lê o Parquet do MinIO via `httpfs`. |
+| Transformação | **dbt** (adapter `dbt-duckdb`) | Modelagem Kimball, testes, lineage. |
+| Orquestração | **Apache Airflow 2.10** (Docker, LocalExecutor) | DAG diária; ingestões em paralelo. |
+| Visualização | **Streamlit + Plotly** | Dashboard read-only sobre os marts. |
+| CI | **GitHub Actions** (`pip-audit` + `gitleaks`) | Auditoria de CVEs e varredura de secrets. |
+
+Ambiente local, single-host, sem cloud.
 
 ---
 
-## Status por etapa
+## Componentes do pipeline
 
-| Etapa | Tema                                | Status         |
-|-------|-------------------------------------|----------------|
-| 0     | Preparação (estrutura, docs, escopo)| ✅ Concluída   |
-| 1     | Ingestão manual com Python puro     | ✅ Concluída   |
-| 2     | Object storage com MinIO            | ✅ Concluída   |
-| 3     | Warehouse analítico com DuckDB      | ✅ Concluída   |
-| 4     | Transformações com dbt              | ✅ Concluída   |
-| 5     | Orquestração com Airflow (Docker)   | ✅ Concluída   |
-| 6     | Indicadores e métricas financeiras  | ✅ Concluída   |
-| 7     | Dashboard com Streamlit             | ✅ Concluída   |
-| 8     | Polimento, documentação e portfólio | ⏳ Pendente    |
+### Ingestão (`ingestion/`)
+Dois alvos no yfinance: cotações (OHLC + volume + fechamento ajustado, partição por **dia**) e dividendos (proventos, partição por **ano** — esparsos). Ambos gravam Parquet no MinIO via um cliente boto3 compartilhado (`ingestion/s3_client.py`). Raw é append-only e idempotente: reexecutar sobrescreve a partição, sem duplicar.
+
+### Warehouse (`warehouse/`)
+`warehouse.setup` cria o schema `raw` no DuckDB com duas views (`raw.cotacoes`, `raw.dividendos`) que apontam para o MinIO via `httpfs`. Como são views, novas partições aparecem sem refresh e o raw segue imutável no object storage.
+
+### Transformação — dbt (`dbt/`)
+Modelagem dimensional Kimball. `staging` (views, limpeza 1:1 com o raw) alimenta as fatos e dimensões; os marts da Etapa 6 calculam indicadores (retorno simples/log/acumulado, médias móveis 7/30/90/200, volatilidade anualizada, drawdown) e dividend yield trailing 12 meses. Dimensões conformadas (`dim_empresa`, `dim_tempo`) são reusadas por cotações e dividendos.
+
+![dbt — lineage graph: staging → fatos/dims → marts](docs/img/dbt-lineage.png)
+
+### Orquestração — Airflow (`airflow/`)
+DAG `pipeline_b3_diario`: 5 `BashOperator` que rodam os mesmos comandos do terminal manual. As duas ingestões (`extract_cotacoes`, `extract_dividendos`) rodam **em paralelo**; `refresh_warehouse` é o ponto de fan-in (espera as duas), seguido de `dbt run` e `dbt test`. Schedule `0 20 * * *` em `America/Sao_Paulo`, `catchup=False`, `retries=2`.
+
+![Airflow — DAG pipeline_b3_diario no Graph View, 5 tasks](docs/img/airflow-dag.png)
+
+### Dashboard — Streamlit (`dashboard/`)
+Lê **somente** os marts, em `read_only` (sem tocar no MinIO), o que permite leitura concorrente enquanto a DAG escreve. Duas abas: Visão Individual (um ticker: cartões, preço com médias móveis, 5 gráficos Plotly) e Comparação (6 tickers: retorno re-ancorado na janela, risco × retorno, ranking de DY).
 
 ---
 
@@ -93,237 +121,99 @@ Peças marcadas com ✅ já estão ativas. As demais entram nas etapas seguintes
 
 ```
 b3-data-pipeline/
-├── ingestion/                  # Scripts de download e persistência (Etapa 1+2)
-│   ├── dividendos/             # Ingestão de dividendos (Etapa 6)
-│   ├── s3_client.py            # Cliente boto3/MinIO compartilhado (cotações + dividendos)
-│   └── README.md
-├── warehouse/                  # Conexão e setup do DuckDB local (Etapa 3); views raw.cotacoes + raw.dividendos
-│   └── README.md
-├── dbt/                        # Projeto dbt (Etapas 4 e 6)
-│   ├── dbt_project.yml
-│   ├── profiles.yml            # Versionado conscientemente (credenciais via env_var)
-│   ├── packages.yml
-│   ├── seeds/empresas.csv
-│   ├── models/{staging,marts}/ # marts: estrela de cotações + indicadores e dividend yield (Etapa 6)
-│   ├── tests/                  # Custom tests (regras de negócio; +4 na Etapa 6)
-│   └── README.md
-├── sql/
-│   └── exploratoria/           # Queries .sql versionadas, executadas pelo notebook
-├── scripts/                    # Utilitários de validação e operação (não-pipeline)
-│   └── README.md
-├── data/
-│   └── raw/                    # Histórico da Etapa 1 (não mais escrito; raw atual mora no MinIO)
-│       └── .gitkeep
-├── notebooks/                  # Exploração ad-hoc em Jupyter
-│   └── exploracao_etapa3.ipynb
-├── dashboard/                  # Dashboard Streamlit + Plotly (Etapa 7)
-│   ├── app.py                  # Entry point; abas e gráficos
-│   ├── data.py                 # Acesso a dados (read-only, cacheado)
-│   └── README.md
-├── airflow/                    # Orquestração (Etapa 5)
-│   ├── Dockerfile              # Imagem custom (airflow + deps do projeto)
-│   ├── dags/pipeline_b3_diario.py
-│   ├── logs/                   # Gitignored, bind mount em runtime
-│   ├── plugins/                # Gitignored, bind mount em runtime
-│   └── README.md
-├── .github/
-│   └── workflows/security.yml  # CI de segurança: pip-audit + gitleaks (M6)
-├── docs/
-│   ├── decisoes.md             # Decisões técnicas com racional
-│   ├── divida_tecnica.md       # Dívida técnica consciente, por etapa
-│   └── NOTAS.md                # Caderno de aprendizados por etapa
-├── docker-compose.yml          # MinIO (Etapa 2) + Airflow (Etapa 5)
-├── warehouse.duckdb            # Arquivo do warehouse local (gitignored, regenerável)
-├── .env.example                # Template das credenciais (versionado)
-├── .env                        # Credenciais reais (gitignored)
-├── .gitignore
-├── README.md
-├── CLAUDE.md                   # Diretrizes para sessões com Claude Code
-├── requirements.txt            # RUNTIME do pipeline (>=; build do Airflow + auditado pelo CI)
-├── requirements-dev.txt        # Dev/exploração (Jupyter, plotly, pip-audit); não auditado pelo CI
-└── requirements-dashboard.txt  # Deps do dashboard (Streamlit; deployável à parte)
+├── ingestion/          # Download e persistência no MinIO (cotações + dividendos/)
+├── warehouse/          # Conexão e setup do DuckDB; views raw.* via httpfs
+├── dbt/                # Projeto dbt: staging, fatos/dims, marts, testes, seed
+├── airflow/            # Imagem custom, DAG pipeline_b3_diario, Dockerfile
+├── dashboard/          # App Streamlit + Plotly (read-only sobre os marts)
+├── sql/exploratoria/   # Queries .sql versionadas (executadas pelo notebook)
+├── scripts/            # Utilitários de validação e operação (não-pipeline)
+├── notebooks/          # Exploração ad-hoc em Jupyter
+├── data/raw/           # Histórico da Etapa 1 (raw atual mora no MinIO)
+├── docs/               # decisoes.md · divida_tecnica.md · NOTAS.md · img/
+├── docker-compose.yml  # MinIO + Airflow (Postgres, webserver, scheduler)
+├── requirements*.txt   # runtime · dev · dashboard (papéis distintos)
+└── .env.example        # Template de credenciais (o .env real é gitignored)
 ```
 
-> O repositório evolui em camadas, não nasce pronto: cada pasta apareceu na etapa que a exigiu.
+Cada pasta apareceu na etapa que a exigiu — o repositório evolui em camadas.
 
 ---
 
-## Setup local
+## Como rodar
 
-Pré-requisitos: Python 3.11+, Docker e Docker Compose.
+Pré-requisitos: **Python 3.11+**, **Docker** e **Docker Compose**.
 
 ```bash
-# 1. Clone do repositório
-git clone https://github.com/<seu-usuario>/b3-data-pipeline.git
+# 1. Clonar e criar o ambiente
+git clone https://github.com/pedropaulo-d/b3-data-pipeline.git
 cd b3-data-pipeline
-
-# 2. Criar ambiente virtual
 python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt    # runtime do pipeline (ingestão, warehouse, dbt)
 
-# 3. Ativar o ambiente
-# Linux / macOS:
-source .venv/bin/activate
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
+# 2. Credenciais do MinIO (defaults locais já funcionam)
+cp .env.example .env               # Windows: copy .env.example .env
 
-# 4. Instalar dependências
-#    Runtime do pipeline (ingestão, warehouse, dbt):
-pip install -r requirements.txt
-#    Para desenvolver / rodar notebooks (Jupyter, plotly) e auditar:
-#    pip install -r requirements.txt -r requirements-dev.txt
+# 3. Subir MinIO + Airflow (Postgres, scheduler, webserver)
+docker compose build               # 1ª vez ou após mudar requirements.txt / Dockerfile
+docker compose up -d               # ~1-2 min na 1ª subida; confira com: docker compose ps
+#   Console MinIO  → http://localhost:9001   |   Airflow UI → http://localhost:8080 (admin/admin)
 
-# 5. Configurar credenciais do MinIO (raw layer)
-cp .env.example .env       # Linux/macOS
-copy .env.example .env     # Windows
-# Edite .env se quiser trocar credenciais; defaults funcionam para uso local.
+# 4. Carga inicial (manual, fora da DAG)
+python -m ingestion.main --modo inicial             # cotações
+python -m ingestion.dividendos.main --modo inicial  # dividendos
+python -m warehouse.setup                           # cria schema raw + views no DuckDB
 
-# 6. Subir todo o ambiente: MinIO + Airflow (Postgres + scheduler + webserver)
-#    Primeira vez, ou após mudar requirements.txt / airflow/Dockerfile:
-docker compose build
-docker compose up -d
-
-# 7. Aguardar ~1-2 min na primeira subida (build da imagem + init do Airflow).
-# Conferir saúde: docker compose ps  (6 containers; mc-init e airflow-init
-# em "exited (0)" é esperado — são init containers).
-# Console MinIO:    http://localhost:9001 (usuário/senha do .env)
-# API S3 MinIO:     http://localhost:9000
-# Airflow webserver: http://localhost:8080 (login admin / admin)
-
-# 8. Rodar a ingestão (manual, fora da DAG):
-python -m ingestion.main --modo inicial
-
-# 9. Setup do warehouse DuckDB — cria o schema raw e a view raw.cotacoes
-# apontando para o MinIO. Imprime contagem, tickers e range de datas.
-python -m warehouse.setup
-
-# 10. (Opcional) Abrir o notebook exploratório
-jupyter notebook notebooks/exploracao_etapa3.ipynb
-
-# 11. Etapa 4 — rodar o dbt (cria schemas staging/seed/marts no mesmo .duckdb)
+# 5. Transformar e testar (dbt)
 cd dbt
 dbt deps --profiles-dir ./
-dbt build --profiles-dir ./        # seed + run + test em um único comando
-dbt docs generate --profiles-dir ./
-dbt docs serve --profiles-dir ./ --port 8081   # 8080 está com o Airflow
+dbt build --profiles-dir ./        # seed + run + test (49 testes) em um comando
+```
 
-# 12. Etapa 5 — usar o Airflow para automatizar os passos 8, 9 e 11.
-# Na UI (http://localhost:8080) localizar a DAG `pipeline_b3_diario`,
-# despausar e clicar em "Trigger DAG". As 5 tasks devem ficar verdes
-# (extract_cotacoes e extract_dividendos iniciam em paralelo).
-# Detalhes em airflow/README.md.
+**Automação:** em vez dos passos 4–5, despause a DAG `pipeline_b3_diario` na UI do Airflow e clique em *Trigger DAG* — as 5 tasks rodam a ingestão, o refresh do warehouse, o `dbt run` e o `dbt test`. Detalhes em [`airflow/README.md`](airflow/README.md).
 
-# 13. Etapa 7 — dashboard Streamlit (lê os marts, somente leitura).
-# Requer os marts já materializados (passo 11 ou a DAG). Da raiz do repo:
+**Dashboard local:** com os marts já materializados,
+
+```bash
 pip install -r requirements-dashboard.txt
-streamlit run dashboard/app.py        # abre em http://localhost:8501
-# Deploy no Streamlit Cloud: o repo já versiona warehouse.duckdb como
-# snapshot e tem dashboard/requirements.txt. Passo a passo (incl. secrets
-# dummy de MinIO) e limitação de concorrência em dashboard/README.md.
+streamlit run dashboard/app.py     # http://localhost:8501
 ```
 
-Para derrubar todos os serviços preservando os dados:
-
-```bash
-docker compose down       # remove containers, mantém volumes (raw + metastore)
-docker compose down -v    # remove TAMBÉM volumes (apaga raw e metastore do Airflow)
-```
-
----
-
-## Dependências e CI de segurança
-
-Dois arquivos de dependências, com papéis distintos:
-
-| Arquivo                 | Papel       | Versões | Quem consome | Auditado pelo CI? |
-|-------------------------|-------------|---------|--------------|-------------------|
-| `requirements.txt`      | **runtime (intenção)** | `>=`   | Build da imagem do Airflow + `pip-audit` no CI | **Sim** |
-| `requirements-dev.txt`  | dev/exploração/segurança | `>=`  | Notebooks (Jupyter, plotly) e auditoria local (`pip-audit`) | Não |
-
-`requirements.txt` declara o **runtime** do pipeline — só o que ingestão,
-warehouse, dbt e Airflow precisam para rodar (deps diretas, `>=`,
-legível). É o arquivo usado no `docker build` da imagem do Airflow (o
-`pip` resolve as versões respeitando as constraints da imagem base
-`apache/airflow:2.10.5`) **e** a única superfície auditada pelo CI.
-
-`requirements-dev.txt` reúne o que só existe em **desenvolvimento**:
-notebooks exploratórios (Jupyter, plotly) e auditoria de segurança
-(pip-audit). Não entra na imagem do Airflow nem é auditado pelo CI — dev
-local não é superfície de produção, então CVEs em transitivas do Jupyter
-(bleach, tornado, jupyter-server) não fazem o build falhar. Para
-desenvolver ou rodar os notebooks, instale **ambos**:
-
-```bash
-pip install -r requirements.txt -r requirements-dev.txt
-```
-
-O projeto **não mantém um `requirements.lock`**. A reprodutibilidade do
-build da imagem do Airflow vem da imagem base `apache/airflow:2.10.5` (que
-já fixa as versões das libs comuns) + `requirements.txt`. Um lock `==`
-gerado por `pip freeze` de um venv standalone conflitava com as
-constraints da imagem oficial e não tinha consumidor real (nem Dockerfile,
-nem CI), então foi removido (ver
-[`docs/divida_tecnica.md`](docs/divida_tecnica.md), DT-SEC.1/DT-SEC.4). Se
-um dia um lock determinístico virar requisito, gerá-lo via as constraints
-oficiais do Airflow (constraints-2.10.5).
-
-**CI de segurança** (diferencial de portfólio): o repositório roda
-[`.github/workflows/security.yml`](.github/workflows/security.yml) em todo
-push para `main` e em todo pull request. Dois controles:
-
-- **`pip-audit`** — procura CVEs conhecidos no **runtime** do pipeline
-  (`pip-audit -r requirements.txt`). Falha o build em qualquer CVE.
-  Auditamos só o runtime de propósito: as deps de desenvolvimento
-  (Jupyter etc.) não fazem parte do deploy.
-- **`gitleaks`** — procura secrets vazados no histórico do Git. Falha o
-  build se encontrar.
-
-Localmente: `pip install pip-audit && pip-audit -r requirements.txt`
-(deve reportar *No known vulnerabilities found*). `gitleaks` e
-`trufflehog` são binários (não pip) — ver `requirements-dev.txt` para
-instalação via Docker ou gerenciador de pacotes.
-
-A dívida técnica consciente do projeto fica registrada em
-[`docs/divida_tecnica.md`](docs/divida_tecnica.md).
+Derrubar os serviços: `docker compose down` (mantém os volumes) ou `docker compose down -v` (apaga raw + metastore).
 
 ---
 
 ## Decisões técnicas
 
-As decisões de arquitetura e seus trade-offs estão documentadas em [`docs/decisoes.md`](docs/decisoes.md). Resumo das decisões já tomadas:
+O detalhe completo, com contexto e trade-off de cada escolha, está em [`docs/decisoes.md`](docs/decisoes.md) (45 decisões registradas). As de maior peso:
 
-1. **Ambiente local em vez de cloud** — custo zero e iteração rápida; abro mão de exercitar IAM real.
-2. **DuckDB em vez de BigQuery** — roda na máquina, SQL padrão e lê Parquet nativo; não exercito o BigQuery.
-3. **6 tickers em vez do Ibovespa inteiro** — 4 setores cobertos, escalar é trivial; o número absoluto soa menos impressivo.
-4. **Preço bruto e ajustado lado a lado no raw** (Etapa 1) — imutabilidade do raw; permite recalcular ajustes sem re-baixar.
-5. **Arquivo Parquet por data, tickers juntos** (Etapa 1) — evita micro-arquivos por ticker e mantém partition pruning eficiente.
-6. **Reexecução sobrescreve a partição** (Etapa 1) — idempotência semântica no raw; correções viram nova execução, não nova versão.
-7. **MinIO em Docker Compose dedicado na raiz** (Etapa 2) — portabilidade e preparação para Airflow integrar o mesmo arquivo; abro mão de rodar 100% sem Docker.
-8. **Bucket único com prefixos por camada** (Etapa 2) — simplicidade; refatoraria se permissões granulares por camada virassem requisito.
-9. **Trocar storage local por S3 direto, sem abstração** (Etapa 2) — YAGNI: raw mora em object storage, ponto; aceito perder execução 100% offline.
-10. **boto3 em vez de s3fs/pyarrow.fs** (Etapa 2) — cliente oficial, é o que aparece em vaga; verboso, mas explícito sobre o protocolo S3.
-11. **DuckDB persistente em arquivo na raiz** (Etapa 3) — view `raw.cotacoes` sobrevive entre sessões e é compartilhada com o dbt na Etapa 4; arquivo gitignored, regenerável a partir do MinIO.
-12. **Schema `raw` como view, não tabela** (Etapa 3) — janela lógica sobre o MinIO; novas partições aparecem sem refresh.
-13. **Esquema estrela Kimball** (Etapa 4) — `fato_cotacoes_diarias` + `dim_empresa` + `dim_tempo`; surrogate keys nas dimensões, chave composta na fato.
-14. **SCD tipo 1 em `dim_empresa`** (Etapa 4) — sobrescreve sem histórico; sem snapshot do dbt nesta etapa.
-15. **dim_tempo gera calendário completo** (Etapa 4) — independente da fato, 2020–2030; padrão Kimball que permite relatórios temporais consistentes.
-16. **profiles.yml do dbt versionado no repo** (Etapa 4) — credenciais via `env_var()`, repo continua reproduzível sem etapa "configure seu profile".
-17. **Airflow no mesmo `docker-compose.yml` do MinIO** (Etapa 5) — compose único renomeado; mesma rede Docker permite à DAG resolver `minio:9000`.
-18. **LocalExecutor em vez de CeleryExecutor** (Etapa 5) — single-host, volume desprezível, sem worker/Redis separados.
-19. **Bind mount + BashOperator** (Etapa 5) — DAG roda os mesmos comandos do terminal manual; paridade exata com a execução documentada no README.
-20. **DAG de 5 tasks (`[extract_cotacoes ∥ extract_dividendos]` → `refresh_warehouse` → `dbt run` → `dbt test`)** (Etapa 5; dividendos integrados na Etapa 6) — uma task por etapa lógica do pipeline; as duas ingestões em paralelo com fan-in em `refresh_warehouse`; retry e visibilidade na granularidade certa.
-21. **Schedule `0 20 * * *` America/Sao_Paulo, `catchup=False`** (Etapa 5) — pós-fechamento + ajustes do dia; sem backfill automático (yfinance não muda histórico retroativamente).
-22. **`MINIO_ENDPOINT=http://minio:9000` dentro do container, `localhost:9000` no host** (Etapa 5) — fonte mais comum de "funciona aqui, falha lá"; documentado em três lugares.
-23. **Escopo de indicadores: mercado + dividend yield** (Etapa 6) — fundamentalistas (P/L, P/VP, ROE) fora por limitação do yfinance; DY é o único viável (depende só de proventos + preço).
-24. **Retorno simples E log** (Etapa 6) — log é aditivo no tempo (base da volatilidade); simples é a variação reportável; manter os dois custa nada.
-25. **Base de preço: ajustado para retorno/risco, bruto para yield** (Etapa 6) — ajustado evita queda artificial em data-ex; bruto no denominador do DY evita contar o provento duas vezes.
-26. **Médias móveis 7/30/90/200 com contagem de pregões** (Etapa 6) — Forma A: calcula desde o 1º pregão e sinaliza janela parcial via `pregoes_janela_Nd`.
-27. **Volatilidade amostral, anualizada por √252** (Etapa 6) — `STDDEV_SAMP` sobre retorno log; √252 porque a variância escala linear no tempo.
-28. **Dividendos particionados por ano; `fato_dividendos` conformada** (Etapa 6) — proventos esparsos (1 arquivo/ano); reusa `dim_empresa`/`dim_tempo`; ingestão em subpacote `ingestion/dividendos/`.
-29. **DY trailing 12m sobre preço bruto, via range join** (Etapa 6) — grão diário (série do yield); 0 (não NULL) quando não há provento na janela de 365 dias.
-30. **Materialização Etapa 6: marts pesados como table, `fato_dividendos` como view** — indicadores/DY relidos pelo dashboard → table; fato de dividendos é ínfima → view.
+1. **Local em vez de cloud** — MinIO (S3-compatível) + DuckDB dão custo zero e portabilidade; abro mão de exercitar IAM real.
+2. **Esquema estrela Kimball com dimensões conformadas** — `dim_empresa` e `dim_tempo` são reusadas pela fato de cotações e pela de dividendos.
+3. **Preço ajustado para retorno/risco, bruto para dividend yield** — o ajustado evita queda artificial na data-ex; o bruto no denominador do DY evita contar o provento duas vezes.
+4. **Idempotência semântica no raw** — reexecutar sobrescreve a partição; rodar duas vezes não duplica nem corrompe estado.
+5. **Particionamento por densidade** — cotações por dia, dividendos por ano (proventos são esparsos), evitando micro-arquivos.
+6. **Raw como views DuckDB sobre o MinIO (`httpfs`)** — janela lógica sobre o object storage; novas partições aparecem sem refresh e o raw permanece imutável.
+7. **Ingestões em paralelo na DAG, com fan-in** — `refresh_warehouse` só roda após as duas ingestões; aproveita o paralelismo do LocalExecutor.
+8. **Separação runtime / dev de dependências** — o CI audita só o `requirements.txt` (superfície de produção), sem falhar por CVEs de transitivas do Jupyter.
+9. **`profiles.yml` do dbt versionado, credenciais via `env_var()`** — clonar e rodar sem etapa "configure seu profile".
+10. **Dashboard read-only sobre snapshot** — abre o DuckDB em `read_only=True`, permitindo leitura enquanto a DAG escreve.
 
 ---
 
-## Aprendizados
+## Qualidade e CI
 
-O caderno de conceitos, dúvidas e descobertas de cada etapa fica em [`docs/NOTAS.md`](docs/NOTAS.md). O objetivo do projeto não é só entregar o pipeline — é entender cada peça bem o suficiente para defender em entrevista.
+- **49 testes dbt** — nativos (`not_null`, `unique`, `relationships`, `accepted_values`), `dbt_utils` e **7 testes custom** que codificam regras de negócio (ex.: coerência OHLC, volume não-negativo, dividend yield não-negativo).
+- **CI de segurança** ([`.github/workflows/security.yml`](.github/workflows/security.yml)) em todo push para `main` e em todo PR:
+  - **`pip-audit`** sobre o `requirements.txt` — falha o build em qualquer CVE conhecido no runtime.
+  - **`gitleaks`** sobre o histórico completo do Git — falha o build se encontrar secret vazado.
+
+Reproduzir o audit localmente: `pip install pip-audit && pip-audit -r requirements.txt`.
+
+---
+
+## Status e roadmap
+
+Etapas 0–7 concluídas (ingestão → object storage → warehouse → dbt → Airflow → indicadores → dashboard). A **Etapa 8** (polimento e portfólio) está em andamento.
+
+A dívida técnica é registrada conscientemente em [`docs/divida_tecnica.md`](docs/divida_tecnica.md) — ex.: o snapshot `warehouse.duckdb` versionado infla o histórico do Git (plano B em Parquet/LFS documentado), e o retry da DAG ainda não foi exercitado sob falha real. O caderno de aprendizados por etapa fica em [`docs/NOTAS.md`](docs/NOTAS.md).
