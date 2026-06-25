@@ -92,7 +92,7 @@ def salvar_particionado(df: pd.DataFrame) -> int:
             raise RuntimeError(
                 f"MinIO inacessível em {MINIO_ENDPOINT}. Verifique que o "
                 "serviço está rodando: "
-                "`docker compose -f docker-compose.minio.yml up -d`."
+                "`docker compose up -d minio mc-init`."
             ) from exc
         except ClientError as exc:
             codigo = exc.response.get("Error", {}).get("Code", "desconhecido")

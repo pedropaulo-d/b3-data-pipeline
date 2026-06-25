@@ -40,7 +40,7 @@ python -m scripts.validar_idempotencia --data 2026-05-15 --verbose
 
 Pré-requisitos:
 
-- MinIO rodando (`docker compose -f docker-compose.minio.yml up -d`).
+- MinIO rodando (`docker compose up -d minio mc-init`).
 - Objeto para a data informada já existente no bucket — se não existir,
   o script orienta a rodar a ingestão para ela primeiro.
 

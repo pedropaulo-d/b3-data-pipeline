@@ -28,7 +28,7 @@ ingestion/
 2. `.env` na raiz do repositório (copiar de `.env.example`).
 3. **MinIO rodando** via Docker Compose:
    ```bash
-   docker compose -f docker-compose.minio.yml up -d
+   docker compose up -d minio mc-init
    ```
    O serviço auxiliar `mc-init` cria o bucket `b3-data` automaticamente
    na primeira subida.

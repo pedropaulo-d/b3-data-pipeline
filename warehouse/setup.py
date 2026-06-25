@@ -160,7 +160,8 @@ def main() -> int:
     """
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Escrita (cria schema/views) + S3 (as views raw.* leem do MinIO).
@@ -174,7 +175,7 @@ def main() -> int:
                 "[ERRO] Falha ao criar a view raw.cotacoes lendo do MinIO.\n"
                 "  Possíveis causas:\n"
                 "  1. MinIO fora do ar — suba com:\n"
-                "       docker compose -f docker-compose.minio.yml up -d\n"
+                "       docker compose up -d minio mc-init\n"
                 "  2. Credenciais erradas no .env (MINIO_ACCESS_KEY/SECRET_KEY).\n"
                 "  3. Bucket vazio — rode a ingestão antes:\n"
                 "       python -m ingestion.main --modo inicial\n"

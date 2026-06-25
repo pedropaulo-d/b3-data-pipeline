@@ -47,7 +47,7 @@ Custo dessa escolha: todo comando dbt precisa de `--profiles-dir ./`
 
 1. **MinIO rodando** (Etapa 2):
    ```bash
-   docker compose -f ../docker-compose.minio.yml up -d
+   docker compose -f ../docker-compose.yml up -d minio mc-init
    ```
 2. **Warehouse DuckDB com schema raw** (Etapa 3):
    ```bash

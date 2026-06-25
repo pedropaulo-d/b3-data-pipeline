@@ -11,7 +11,7 @@ O arquivo `warehouse.duckdb` em si **não é versionado** (ver `.gitignore`). El
 
 ## Como usar
 
-Pré-requisitos: MinIO no ar (`docker compose -f docker-compose.minio.yml up -d`) e ingestão já executada ao menos uma vez.
+Pré-requisitos: MinIO no ar (`docker compose up -d minio mc-init`) e ingestão já executada ao menos uma vez.
 
 ```bash
 # Cria o schema raw e a view raw.cotacoes, imprime diagnóstico.

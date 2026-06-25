@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from warehouse.conexao import CAMINHO_WAREHOUSE
+from warehouse.conexao import CAMINHO_WAREHOUSE, obter_conexao
 
 
 # Cada bloco é (cabeçalho, SQL). Mantidos juntos para leitura fácil e
@@ -123,8 +123,6 @@ def main() -> None:
     # dbt) — nenhum toca nas views raw.*/staging do MinIO. Logo não há setup
     # de S3 a fazer, e abrimos em read_only de verdade (coexiste com outros
     # leitores, sem disputar o lock de escrita).
-    from warehouse.conexao import obter_conexao
-
     with obter_conexao(read_only=True) as con:
         for cabecalho, sql in BLOCOS:
             print(f"\n=== {cabecalho} ===")

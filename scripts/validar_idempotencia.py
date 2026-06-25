@@ -104,7 +104,7 @@ def ler_dataframe_do_minio(
     except EndpointConnectionError as exc:
         raise RuntimeError(
             f"MinIO inacessível em {MINIO_ENDPOINT}. Suba o serviço com "
-            "`docker compose -f docker-compose.minio.yml up -d`."
+            "`docker compose up -d minio mc-init`."
         ) from exc
     except ClientError as exc:
         codigo = exc.response.get("Error", {}).get("Code", "desconhecido")

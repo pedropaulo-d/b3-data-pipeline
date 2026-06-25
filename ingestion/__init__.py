@@ -1,7 +1,7 @@
 """Pacote de ingestão da Etapa 1.
 
 Baixa cotações da B3 via yfinance e persiste em Parquet particionado por
-data no diretório `data/raw/cotacoes/`.
+data no raw layer do MinIO (`s3://b3-data/raw/cotacoes/`).
 
 Subdivisão dos módulos:
 - `config`   — constantes (tickers, paths, datas, sufixo da B3).

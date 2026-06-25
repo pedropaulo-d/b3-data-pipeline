@@ -6,7 +6,7 @@ abre os Parquet via extensão ``httpfs`` — não há cópia local do dado.
 
 A partir da Etapa 4, este mesmo arquivo é o destino dos modelos dbt
 (schemas ``staging`` e ``marts``). Este módulo cria apenas o schema
-``raw`` e a view ``raw.cotacoes``; transformações vivem no dbt.
+``raw`` e as views ``raw.cotacoes`` e ``raw.dividendos``; transformações vivem no dbt.
 
 Reexportamos apenas a API de conexão (``obter_conexao`` / ``configurar_s3``).
 ``criar_schema_raw`` mora em :mod:`warehouse.setup` e deve ser importada de

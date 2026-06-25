@@ -13,7 +13,7 @@ Três modos:
 
 Em todos os modos, o destino é o MinIO local (bucket configurado em
 ``.env``); não há flag para escolher backend. Pré-requisito de execução:
-``docker compose -f docker-compose.minio.yml up -d``.
+``docker compose up -d minio mc-init``.
 
 Em todos os modos, a ingestão é idempotente: rodar duas vezes produz o
 mesmo conjunto de objetos no bucket (idempotência semântica — ver
