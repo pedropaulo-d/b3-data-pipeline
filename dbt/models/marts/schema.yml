@@ -23,24 +23,27 @@ models:
       cálculos derivados (retorno, indicadores) ficam para a Etapa 6.
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - empresa_id
-            - tempo_id
+          arguments:
+            combination_of_columns:
+              - empresa_id
+              - tempo_id
     columns:
       - name: empresa_id
         description: "FK para dim_empresa (surrogate key)."
         tests:
           - not_null
           - relationships:
-              to: ref('dim_empresa')
-              field: empresa_id
+              arguments:
+                to: ref('dim_empresa')
+                field: empresa_id
       - name: tempo_id
         description: "FK para dim_tempo (formato YYYYMMDD)."
         tests:
           - not_null
           - relationships:
-              to: ref('dim_tempo')
-              field: tempo_id
+              arguments:
+                to: ref('dim_tempo')
+                field: tempo_id
       - name: abertura
         description: "Preço de abertura do pregão (bruto, sem ajuste de proventos ou splits)."
       - name: maxima
@@ -144,15 +147,17 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_empresa')
-              field: empresa_id
+              arguments:
+                to: ref('dim_empresa')
+                field: empresa_id
       - name: tempo_id
         description: "FK para dim_tempo (formato YYYYMMDD), alinhada pela data-ex."
         tests:
           - not_null
           - relationships:
-              to: ref('dim_tempo')
-              field: tempo_id
+              arguments:
+                to: ref('dim_tempo')
+                field: tempo_id
       - name: valor_dividendo
         description: "Valor pago por ação na data-ex (R$). Sempre > 0 (limpeza no staging)."
         tests:
@@ -169,9 +174,10 @@ models:
       artificial em data-ex). Materializada como table.
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - empresa_id
-            - tempo_id
+          arguments:
+            combination_of_columns:
+              - empresa_id
+              - tempo_id
     columns:
       - name: empresa_id
         description: "FK para dim_empresa (surrogate key)."
@@ -273,9 +279,10 @@ models:
       (0.08 = 8%); 0 quando não houve provento nos últimos 365 dias.
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - empresa_id
-            - tempo_id
+          arguments:
+            combination_of_columns:
+              - empresa_id
+              - tempo_id
     columns:
       - name: empresa_id
         description: "FK para dim_empresa (surrogate key)."

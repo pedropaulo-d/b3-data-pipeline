@@ -16,10 +16,12 @@ models:
     tests:
       # Chave composta (ticker, data) sem duplicatas. Validação cruzada
       # com a granularidade declarada do raw: 1 ticker × 1 pregão.
+      # dbt 1.10+: argumentos de teste genérico aninhados sob `arguments`.
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - ticker
-            - data
+          arguments:
+            combination_of_columns:
+              - ticker
+              - data
     columns:
       - name: data
         description: "Data do pregão (DATE)."
@@ -30,7 +32,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
+              arguments:
+                values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
       - name: abertura
         description: "Preço de abertura do pregão (bruto, sem ajuste de proventos ou splits)."
       - name: maxima
@@ -60,10 +63,12 @@ models:
     tests:
       # Chave composta (ticker, data_ex) sem duplicatas: 1 provento por
       # ticker por data-ex (granularidade declarada do raw de dividendos).
+      # dbt 1.10+: argumentos de teste genérico aninhados sob `arguments`.
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - ticker
-            - data_ex
+          arguments:
+            combination_of_columns:
+              - ticker
+              - data_ex
     columns:
       - name: data_ex
         description: "Data-ex do provento (DATE)."
@@ -74,7 +79,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
+              arguments:
+                values: ['PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'WEGE3', 'ABEV3']
       - name: valor_dividendo
         description: "Valor pago por ação na data-ex (DOUBLE, R$). Sempre > 0 após a limpeza."
         tests:

@@ -139,19 +139,20 @@ fazia parte do `requirements.txt`, listava transitivas de dev (`bleach`,
 
 ## Etapa 6 — Indicadores e métricas financeiras
 
-### DT-6.1 — Deprecation do dbt 1.11 em testes genéricos
-O `dbt build` emite `MissingArgumentsPropertyInGenericTestDeprecation`
-(11 ocorrências). A partir de uma versão futura do dbt, os argumentos de
-testes genéricos (ex.: `relationships` com `to`/`field`) precisam migrar
-para a propriedade aninhada `arguments:` no `schema.yml`, em vez de
-ficarem soltos ao lado de `name:`.
+### DT-6.1 — Deprecation do dbt 1.11 em testes genéricos ✅ *resolvida*
+O `dbt build` emitia `MissingArgumentsPropertyInGenericTestDeprecation`
+(11 ocorrências): a partir do dbt 1.10 os argumentos de testes genéricos
+(ex.: `relationships` com `to`/`field`) precisam migrar para a propriedade
+aninhada `arguments:` no `schema.yml`, em vez de ficarem soltos ao lado de
+`name:`.
 
-- **Motivo do adiamento:** é só **deprecation warning** — não quebra nada
-  hoje, todos os 49 testes passam. Migrar agora seria edição mecânica de
-  11 blocos sem ganho funcional imediato.
-- **Gatilho:** tratar no refactoring estruturado pós-Etapa 7, ou no
-  momento em que a versão do dbt for atualizada (quando o warning vira
-  erro).
+- **Resolução (2026-06-24, refatoração rodada 1):** os 11 blocos
+  (`relationships` ×4, `accepted_values` ×2, `dbt_utils.unique_combination_of_columns`
+  ×5) em `staging/schema.yml` e `marts/schema.yml` passaram a aninhar os
+  argumentos sob `arguments:`. `not_null`/`unique` (sem argumentos) ficaram
+  como estavam. `dbt parse` deixou de emitir o warning; os testes migrados
+  executam (validado por `dbt test --select path:models/marts`). Ver
+  `docs/decisoes.md` (2026-06-24, refatoração rodada 1).
 
 ---
 

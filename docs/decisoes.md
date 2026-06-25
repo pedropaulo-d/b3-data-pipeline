@@ -698,3 +698,20 @@ Migração atômica dos call sites: `warehouse/setup.py` abre em escrita + `conf
 **Trade-off aceito.** Quem usa S3 paga o custo do import dentro da função a cada chamada de `configurar_s3` (desprezível — o módulo fica em `sys.modules` após a 1ª vez). `criar_schema_raw` deixa de ser importável de `warehouse` (só de `warehouse.setup`) — aceitável, não havia consumidor desse atalho.
 
 **Escopo.** Rodada travada nestes itens + o ajuste do notebook da Etapa 3 (passou a chamar `configurar_s3` após `obter_conexao`, já que a Forma C tirou o S3 da abertura). Nomenclatura, estrutura de pastas e demais higienes ficam para rodadas seguintes.
+
+---
+
+## 2026-06-25 — Qualidade de dados — Staging descarta barra parcial do yfinance (OHL zerado/nulo)
+
+**Contexto.** O `dbt build` com dados novos (pregão de 24/06/2026 ingerido) fez o teste de coerência OHLC `fato_fechamento_dentro_do_range` falhar com 6 resultados — exatamente os 6 tickers daquela data. Investigando o raw: a sessão de 24/06 veio do yfinance com `abertura = maxima = minima = volume = 0` e apenas `fechamento`/`fechamento_ajustado` preenchidos (preço válido). É o comportamento conhecido do Yahoo para a **barra mais recente ainda não consolidada** — a barra volta completa no pregão seguinte. Como o `fechamento_ajustado` vinha válido, o filtro de staging (que só descartava `fechamento_ajustado NULL`) deixava a linha passar até a fato, onde `fechamento > maxima` (com `maxima = 0`) violava o teste.
+
+**Decisão.** Filtrar **no staging** (`stg_cotacoes`), **descartando a linha inteira**, com critério sobre o OHL: manter só se `abertura`, `maxima` e `minima` forem **todos não-nulos E > 0**. Cobre os dois sintomas possíveis de barra parcial (zero **ou** nulo). O `WHERE` soma à condição já existente (`fechamento_ajustado IS NOT NULL`).
+
+**Racional.**
+- **Camada correta.** Limpeza de dado que não tem valor analítico é responsabilidade do staging — a fronteira entre "raw como veio" e "modelo analítico". Não toca raw nem fato.
+- **Raw segue imutável.** Não filtramos na ingestão: o raw deve permanecer fiel à fonte (a barra parcial *existiu* assim no yfinance). Corrigir na ingestão apagaria histórico real e quebraria a idempotência por sobrescrita.
+- **Não cega o teste.** Não relaxamos `fato_fechamento_dentro_do_range` — ele está **certo** ao flagrar `fechamento` fora de `[minima, maxima]`. Relaxá-lo (ex.: ignorar `maxima = 0`) esconderia futuras inconsistências OHLC genuínas. A barra ruim é removida *antes* de chegar à fato, então o teste continua rígido e passa.
+- **NULL vs zero (SQL).** `maxima = 0` retorna *unknown* (não TRUE) quando `maxima` é NULL — não filtraria uma barra parcial que viesse com NULL. Por isso `IS NOT NULL AND > 0` explícito nos três campos, cobrindo zero e nulo.
+- **Volume fora do critério, de propósito.** `volume = 0` pode ser legítimo em pregão de baixíssima liquidez, e `fato_volume_nao_negativo` aceita zero. O sinal de barra inválida é o **preço** (OHL), não o volume — filtrar por volume arriscaria descartar pregão real.
+
+**Trade-off aceito.** A sessão mais recente só aparece nos marts **após consolidar** (no pregão seguinte, quando o yfinance devolve a barra completa). Para um pipeline diário de portfólio, ter o último dia com 1 pregão de defasagem quando a fonte ainda não fechou os números é preferível a propagar OHLC inconsistente. Se algum dia o requisito for mostrar a barra provisória, seria com coluna de flag e tratamento explícito downstream — não deixando o dado cru contaminar a fato.

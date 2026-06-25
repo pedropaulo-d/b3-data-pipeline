@@ -598,6 +598,27 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   compilou e rodou sem erro. Era o ponto de maior risco de sintaxe da
   etapa.
 
+- **yfinance entrega barra parcial na sessão mais recente (OHLCV zerado,
+  close válido).** O pregão de 24/06/2026 chegou do Yahoo com
+  `abertura = maxima = minima = volume = 0` nos 6 tickers e só o
+  `fechamento`/`fechamento_ajustado` preenchidos (preço plausível). É o
+  padrão do Yahoo para a sessão mais nova ainda não consolidada — a barra
+  volta completa no pregão seguinte. **Quem pegou foi o teste de coerência
+  OHLC** `fato_fechamento_dentro_do_range` (`fechamento > maxima` quando
+  `maxima = 0`): 6 falhas, todas dessa data. O filtro antigo do staging só
+  descartava `fechamento_ajustado NULL`, e como o ajustado vinha válido, a
+  linha passava e chegava na fato. **Corrigido descartando a barra no
+  staging** (camada de limpeza correta), com critério sobre o OHL — manter
+  só se `abertura/maxima/minima` forem não-nulos **e** > 0. **Lição de SQL
+  — NULL ≠ zero:** `maxima = 0` retorna *unknown* (não TRUE) quando
+  `maxima` é NULL, então não filtraria uma barra parcial que viesse com
+  NULL em vez de zero; por isso a checagem explícita `IS NOT NULL AND > 0`,
+  cobrindo os dois casos. **Volume ficou de fora do critério de propósito:**
+  `volume = 0` pode ser legítimo em pregão de baixíssima liquidez, e o
+  teste `fato_volume_nao_negativo` aceita zero — o sinal de barra inválida
+  é o preço (OHL), não o volume. Não relaxamos o teste (ele está certo) nem
+  filtramos na ingestão (raw segue imutável e fiel à fonte).
+
 ---
 
 ## Etapa 7 — Dashboard com Streamlit
