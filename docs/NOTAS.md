@@ -692,7 +692,31 @@ dos schemas, latência de cold start do httpfs vs warm cache)
   Onde está o limite do DuckDB embarcado como backend de dashboard?
 
 ### Descobertas
-(em branco até começar)
+
+- **Refatoração rodada 1 — um `__init__` que importa o próprio submódulo causa
+  dois problemas de uma vez.** `warehouse/__init__.py` importava
+  `warehouse.setup` só para reexportar `criar_schema_raw`. Esse único import
+  eager produzia *dois* sintomas que pareciam separados: (1) **acoplamento de
+  import** — `warehouse.setup` importa `ingestion.config` no topo, então
+  qualquer `import warehouse.conexao` (inclusive o do dashboard) puxava a
+  validação de `MINIO_*`, mesmo sem usar S3; (2) o **`RuntimeWarning` do
+  `runpy`** em `python -m warehouse.setup` — rodar com `-m` faz o `runpy`
+  importar o pacote `warehouse` (executa o `__init__`), que pré-carrega
+  `warehouse.setup` em `sys.modules` *antes* de o `runpy` executá-lo como
+  `__main__`; o Python avisa que isso pode dar comportamento imprevisível.
+  Remover o reexport (a função segue em `warehouse.setup`, importada de lá)
+  matou os dois. Lição: reexportar no `__init__` por conveniência tem custo —
+  arrasta imports transitivos para todo consumidor do pacote e pode colidir
+  com `-m`. Reexporte só o que tem consumidor real.
+
+- **Import lazy quebra acoplamento sem tocar no módulo "pesado".** Mover o
+  `from ingestion.config import MINIO_*` do topo de `conexao.py` para dentro
+  de `configurar_s3()` desacoplou `obter_conexao` da validação de `MINIO_*`
+  **sem** alterar `ingestion.config` (que segue falhando cedo para quem
+  realmente usa S3). Provei o desacoplamento por asserção em `sys.modules`
+  (`'ingestion.config' not in sys.modules` após importar `warehouse.conexao`)
+  — um teste mais honesto que "rodei e não quebrou", porque local o `.env`
+  mascararia a dependência.
 
 ---
 

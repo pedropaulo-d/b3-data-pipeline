@@ -30,6 +30,11 @@ processo de cada vez, mas impedia leitura concorrente.
 - **Trade-off aceito:** quem precisa de S3 faz duas chamadas
   (`obter_conexao` + `configurar_s3`) em vez de uma. Ver
   `docs/decisoes.md` (2026-06-18).
+- **Adendo (2026-06-24):** a Forma C separou as funções, mas o import de
+  `ingestion.config` permanecia no topo de `conexao.py` — `obter_conexao`
+  ainda exigia `MINIO_*` por tabela. A refatoração rodada 1 tornou esse
+  import **lazy** (dentro de `configurar_s3`), fechando a separação de vez.
+  Ver DT-7.2.
 
 ### DT-5.2 — `requirements` único arrasta deps de dev para a imagem ✅ *resolvida*
 A imagem do Airflow instalava o conjunto completo, trazendo `jupyter`,
@@ -174,34 +179,45 @@ permanente do `.git`, mesmo que poucas linhas dos marts tenham mudado.
     + storage LFS). Resolve o inchaço sem mudar o app; depende de o host de
     deploy suportar LFS no checkout.
 
-### DT-7.2 — Dashboard acopla a `ingestion.config` (exige credenciais S3 no import)
-O dashboard, ao importar `warehouse.conexao`, importa transitivamente
+### DT-7.2 — Dashboard acopla a `ingestion.config` (exige credenciais S3 no import) ✅ *resolvida*
+O dashboard, ao importar `warehouse.conexao`, importava transitivamente
 `ingestion.config`, que **valida `MINIO_*` no import** (`_exigir_var`).
-Resultado: para subir o dashboard no Streamlit Cloud é preciso definir
+Resultado: para subir o dashboard no Streamlit Cloud era preciso definir
 secrets `MINIO_*` **placeholder (dummy)** — mesmo o dashboard NÃO usando
 MinIO (abre o DuckDB em `read_only=True` e lê só marts locais, sem
 `configurar_s3`).
 
-- **Por que é dívida:** o dashboard não deveria depender de configuração de
-  *ingestão*. Abrir o DuckDB em read-only deveria exigir apenas o **caminho
-  do arquivo** — nenhuma credencial de S3. Hoje a exigência vem "de carona"
-  numa cadeia de imports, não de uma necessidade real do app.
-- **Motivo do adiamento:** desacoplar agora mexeria em `ingestion.config`
-  (consumido também pela ingestão e pelo setup do warehouse); o custo não se
-  justifica só para o deploy, e o contorno (secrets dummy) é trivial e está
-  documentado em `dashboard/README.md`.
-- **Gatilho/solução:** na refatoração estruturada (pós-Etapa 7), fazer
-  `obter_conexao(read_only=True)` **não importar nem exigir**
-  `ingestion.config`. Caminhos possíveis:
-  - mover a resolução das credenciais S3 para **dentro** de `configurar_s3`
-    (lazy — só lê `MINIO_*` quando a função é de fato chamada), ou
-  - separar a config de **caminho do DuckDB** da config de **S3** (módulos
-    distintos), para `conexao.py` depender só da primeira.
+- **Por que era dívida:** o dashboard não deveria depender de configuração de
+  *ingestão*. Abrir o DuckDB em read-only exige apenas o **caminho do
+  arquivo** — nenhuma credencial de S3. A exigência vinha "de carona" numa
+  cadeia de imports, não de uma necessidade real do app.
+- **Resolução (2026-06-24, refatoração rodada 1) — import lazy (Desenho A):**
+  o `from ingestion.config import MINIO_*` saiu do topo de
+  `warehouse/conexao.py` para **dentro** de `configurar_s3()`, e
+  `warehouse/__init__.py` deixou de reexportar `criar_schema_raw` (cortando o
+  import de `warehouse.setup` → `ingestion.config`). Com as duas pontas
+  cortadas, `obter_conexao` não importa mais `ingestion.config`: o dashboard
+  sobe **sem nenhum `MINIO_*`** no ambiente (provado por asserção em
+  `sys.modules`). Os secrets dummy do Streamlit Cloud deixam de ser
+  necessários (adendo na entrada de deploy em `docs/decisoes.md`). Conclui a
+  **Forma C** (DT-5.1), que separou `obter_conexao` de `configurar_s3` mas
+  havia deixado o import de `ingestion.config` em `conexao.py`. Ver
+  `docs/decisoes.md` (2026-06-24, refatoração rodada 1).
 
-  Quando resolvido, os secrets dummy do Streamlit Cloud deixam de ser
-  necessários. Relacionado à refatoração **Forma C** (DT-5.1, parcialmente
-  feita: separou `obter_conexao` de `configurar_s3`, mas o import de
-  `ingestion.config` em `conexao.py` permaneceu).
+### DT-7.3 — `RuntimeWarning` do `runpy` em `python -m warehouse.setup` ✅ *resolvida*
+`python -m warehouse.setup` emitia *"'warehouse.setup' found in sys.modules
+after import of package 'warehouse'…"*. Causa: `warehouse/__init__.py`
+importava `warehouse.setup` (para reexportar `criar_schema_raw`), então ao
+rodar com `-m` o `runpy` importava o pacote `warehouse` (executando o
+`__init__`) e deixava `warehouse.setup` em `sys.modules` **antes** de
+executá-lo como `__main__`.
+
+- **Resolução (2026-06-24, refatoração rodada 1):** mesma mudança que fechou
+  a DT-7.2 — remover o `from warehouse.setup import criar_schema_raw` do
+  `__init__`. Sem a pré-população de `sys.modules`, o warning não dispara
+  (validado com `python -W error::RuntimeWarning -m warehouse.setup`). Uma
+  correção, dois itens. Não foi suprimido com `filterwarnings`: a causa foi
+  removida.
 
 ---
 

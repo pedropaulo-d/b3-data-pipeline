@@ -22,12 +22,13 @@ from urllib.parse import urlparse
 
 import duckdb
 
-from ingestion.config import (
-    MINIO_ACCESS_KEY,
-    MINIO_ENDPOINT,
-    MINIO_REGION,
-    MINIO_SECRET_KEY,
-)
+# `ingestion.config` é importado *dentro* de `configurar_s3` (lazy), não aqui
+# no topo. Esse módulo valida as credenciais MINIO_* já no import
+# (`_exigir_var`); importá-lo no nível do módulo obrigaria QUALQUER consumidor
+# de `obter_conexao` — inclusive o dashboard, que só lê marts locais em
+# read-only e nunca toca S3 — a definir essas variáveis. Adiando o import para
+# a função que de fato precisa de S3, `obter_conexao` deixa de exigir
+# credencial de object storage. Ver docs/decisoes.md (2026-06-24).
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,16 @@ def configurar_s3(con: duckdb.DuckDBPyConnection) -> None:
     Args:
         con: Conexão aberta por :func:`obter_conexao`.
     """
+    # Import lazy: só quem chama configurar_s3 precisa das credenciais MINIO_*.
+    # Mantê-lo aqui (e não no topo do módulo) é o que desacopla obter_conexao
+    # de ingestion.config — ver comentário no topo do arquivo.
+    from ingestion.config import (
+        MINIO_ACCESS_KEY,
+        MINIO_ENDPOINT,
+        MINIO_REGION,
+        MINIO_SECRET_KEY,
+    )
+
     host_porta, use_ssl = _normalizar_endpoint(MINIO_ENDPOINT)
 
     logger.info("Configurando S3 na conexão; endpoint=%s (ssl=%s).", host_porta, use_ssl)

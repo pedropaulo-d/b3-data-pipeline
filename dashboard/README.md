@@ -96,17 +96,16 @@ que apontariam para o MinIO inexistente na nuvem.
    `dashboard/requirements.txt` (busca primeiro no diretório do entrypoint),
    que inclui `../requirements-dashboard.txt`. O `requirements.txt` da raiz
    (runtime do pipeline) é ignorado.
-5. **Secrets (OBRIGATÓRIO):** em **Advanced settings → Secrets**, cole as
-   variáveis abaixo. O dashboard não usa MinIO, mas importa
-   `ingestion.config`, que **exige** essas variáveis no import (senão o app
-   quebra ao subir). Valores **dummy** bastam — secrets de nível raiz no
-   Streamlit Cloud viram variáveis de ambiente, que é o que o `config` lê:
+5. **Secrets:** **nenhum necessário.** O dashboard lê apenas o
+   `warehouse.duckdb` versionado, em read-only, e não toca em MinIO/S3.
+   Desde a refatoração rodada 1 (import lazy de S3 — ver
+   `docs/divida_tecnica.md`, DT-7.2), importar `warehouse.conexao` **não**
+   puxa mais `ingestion.config`, então o app sobe sem nenhum `MINIO_*`.
 
-   ```toml
-   MINIO_ENDPOINT = "http://localhost:9000"
-   MINIO_ACCESS_KEY = "dummy"
-   MINIO_SECRET_KEY = "dummy"
-   ```
+   > Histórico: antes do import lazy, era preciso definir `MINIO_*` *dummy*
+   > nos secrets só para satisfazer a validação no import de
+   > `ingestion.config`. Não é mais o caso — se esses secrets dummy já
+   > estiverem configurados na nuvem, ficam inertes e podem ser removidos.
 
 6. Clique em **Deploy**. A URL pública (`https://<algo>.streamlit.app`) sai
    ao fim — cole-a no README da raiz.
